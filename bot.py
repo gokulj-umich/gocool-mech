@@ -233,7 +233,7 @@ P = {
     "engage_r": 240.0,      # start fighting visible mechs within this range
     "passive": False,       # if True: only fight when close (< close_r) or recently shot at
     "close_r": 100.0,
-    "strafe_min": 0.35, "strafe_max": 0.9,
+    "strafe_min": 3.0, "strafe_max": 5.0,
     "want_gun": 80.0, "want_laser": 100.0, "want_lightning": 28.0,
     "retreat_hp": 0.22, "retreat_hp_multi": 0.38,
     "loot_r": 110.0, "npc_hp": 0.45, "crates": True,
@@ -1149,8 +1149,11 @@ class Bot:
         d = d2((x, y), (tx, ty))
         rx, ry = (tx - x) / max(d, 1e-6), (ty - y) / max(d, 1e-6)
         px, py = -ry, rx
-        if self.t > self.strafe_until:
-            self.strafe_dir = random.choice([-1, 1])
+        # v33 steady strafe: long runs in one direction (reverse every 3-5 s, or early at a wall/edge)
+        ahead_x, ahead_y = x + px * self.strafe_dir * 7.0, y + py * self.strafe_dir * 7.0
+        if self.t > self.strafe_until or (self.t > self.strafe_until - P["strafe_max"] + 0.8
+                                          and not self.w.walkable(ahead_x, ahead_y)):
+            self.strafe_dir = -self.strafe_dir
             self.strafe_until = self.t + random.uniform(P["strafe_min"], P["strafe_max"])
         # preferred range
         if want is not None:
@@ -1437,7 +1440,7 @@ class Bot:
                 b = math.atan2(y - e["pos"][1], x - e["pos"][0])
                 if abs(wrap(e["aim"][0] - b)) < math.atan2(6.0, max(e["_d"], 1)) + 0.03:
                     px, py = -math.sin(b), math.cos(b)
-                    s = 1 if (int(self.t * 1.3) % 2 == 0) else -1
+                    s = self.strafe_dir
                     best = (px * s, py * s)
         # bullets / shells
         for p in obs.get("projectiles", []):
@@ -1469,7 +1472,7 @@ class Bot:
                     continue
                 cxp, cyp = px + vx * tc - x, py + vy * tc - y
                 miss = math.hypot(cxp, cyp)
-                if miss < 4.0:
+                if miss < 4.0 and False:  # v33b: no per-bullet sidesteps (keep the steady strafe)
                     vh = math.hypot(vx, vy) or 1
                     nx_, ny_ = -vy / vh, vx / vh
                     s = 1 if (nx_ * -cxp + ny_ * -cyp) < 0 else -1
