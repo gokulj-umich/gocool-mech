@@ -1088,7 +1088,7 @@ class Bot:
         their = tgt.get("weapons", [])
         if "lightning" in their and "lightning" not in slots:
             want = max(want, 60.0)
-        if (P["standoff"] and "laser" in slots and "laser" not in their and tgt.get("kind") == "mech"
+        if (P["standoff"] and "laser" in slots and tgt.get("kind") == "mech"
                 and self.t >= self.shorted_until):
             thp = tgt.get("hp", 1400) / max(tgt.get("max_hp", 1400), 1)
             want = P["standoff_r"] if thp > 0.2 else 120.0
