@@ -627,7 +627,7 @@ class Bot:
                 sc += escorts_b * 30.0
                 if e["id"] == self.cur_tid:
                     sc -= 50.0 + (40.0 if thp < 0.6 else 0.0)   # finish what we started
-                if self.survival and not easy:
+                if self.survival and not easy and not (e["_d"] > 120 and vis):
                     continue
             if sc < best:
                 best, target = sc, e
@@ -803,6 +803,19 @@ class Bot:
             if P["aggressive"]:
                 charging = "laser" in slots and (weps[slots["laser"]].get("charge", 0) or 0) > 0
                 boost = me["energy"] > 45 and not charging and (int(t * 2.0) % 3 == 0)
+            pack = [e for e in enemies if e["_d"] < 230]
+            if len(pack) >= 2:
+                cxp = sum(e["pos"][0] for e in pack) / len(pack)
+                cyp = sum(e["pos"][1] for e in pack) / len(pack)
+                ax_, ay_ = x - cxp, y - cyp
+                nn_ = math.hypot(ax_, ay_) or 1.0
+                zc_ = obs["zone"]["next_center"]
+                zx_, zy_ = zc_[0] - x, zc_[1] - y
+                zn_ = math.hypot(zx_, zy_) or 1.0
+                edge = max(0.0, (zn_ - 0.6 * obs["zone"]["next_radius"]) / max(obs["zone"]["next_radius"], 1.0))
+                move = [move[0] * 0.35 + ax_ / nn_ * (1 - edge) + zx_ / zn_ * edge, move[1] * 0.35 + ay_ / nn_ * (1 - edge) + zy_ / zn_ * edge]
+                boost = boost or (min(e["_d"] for e in pack) < 140 and me["energy"] > 30)
+                label += " kite"
             if P["reload_cover"] and target["_d"] < 180:
                 gi_ = slots.get("gun")
                 reloading = gi_ is not None and weps[gi_].get("reload", 0) > 0.4
