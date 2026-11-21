@@ -522,6 +522,11 @@ class Bot:
                 self.hit_ids.add(ev["target"])
             elif et == "kill":
                 self.my_kills += 1
+                kid = ev.get("target")          # v16: forget the corpse so we don't stalk/charge at it
+                self.tracks.pop(kid, None)
+                if self.cur_tid == kid:
+                    self.cur_tid = None
+                self.peek = None
             elif et == "effect" and ev.get("effect") == "short":
                 self.shorted_until = t + 2.0
             elif et == "take_failed":
@@ -848,7 +853,7 @@ class Bot:
         elif calm and loot_goal is not None:
             label = "loot " + loot_goal[3]
             move = self.go_to(me, self.local_plan, (loot_goal[0], loot_goal[1]), t)
-        elif (calm or (t < P["powerup_until"] and target is None)) and npc_tgt is not None and not P["stealth"]:
+        elif (calm or (t < P["powerup_until"] and target is None)) and npc_tgt is not None and not P["stealth"] and (hp_frac >= 0.9 or t < P["powerup_until"]):
             n, dd = npc_tgt
             label = "npc"
             vis = w.los(muzzle, (n["pos"][0], n["pos"][1], n["pos"][2] + 1.75))
@@ -863,7 +868,7 @@ class Bot:
                 move = self.fight_vector(me, n, slots, weps, circle, want=stand)
             if vis:
                 farm_shoot = ("npc", n)
-        elif (calm or (t < P["powerup_until"] and target is None)) and crate_tgt is not None and P["crates"] and not P["stealth"]:
+        elif (calm or (t < P["powerup_until"] and target is None)) and crate_tgt is not None and P["crates"] and not P["stealth"] and (hp_frac >= 0.9 or t < P["powerup_until"]):
             c, dd = crate_tgt
             label = "crate"
             cz = c["pos"][2] + 1.2
