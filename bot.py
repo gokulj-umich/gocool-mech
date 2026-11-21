@@ -221,11 +221,27 @@ class Planner:
 
 
 # --------------------------------------------------------------------------- bot
+# Tunable tactics (one experiment = one change here)
+P = {
+    "engage_r": 240.0,      # start fighting visible mechs within this range
+    "passive": False,       # if True: only fight when close (< close_r) or recently shot at
+    "close_r": 100.0,
+    "strafe_min": 0.35, "strafe_max": 0.9,
+    "want_gun": 70.0, "want_laser": 150.0, "want_lightning": 28.0,
+    "retreat_hp": 0.35, "retreat_hp_multi": 0.55,
+    "loot_r": 90.0, "npc_hp": 0.65, "crates": True,
+    "laser_first": True,
+    "cube_r": 110.0, "crate_r": 110.0, "npc_r": 160.0, "npc_stand": 62.0,
+    "drops": True, "drop_r": 170.0, "heal_to": 0.8,
+}
+
 UPGRADE_PRIORITY = ["plating", "armor", "nanites", "gun_rate", "gun_damage", "lightning_efficiency",
                     "laser_charge", "laser_damage", "servos", "lightning_range", "sensors", "gun_mag",
                     "gun_velocity", "gyros", "lightning_chain", "reactor", "capacitor", "jets",
                     "mortar_reload", "mortar_velocity", "mortar_splash", "laser_pierce"]
 WEAPON_RANK = {"lightning": 3.0, "laser": 2.6, "mortar": 1.0, "gun": 0.0}
+if P["laser_first"]:
+    WEAPON_RANK["laser"] = 3.2
 
 
 class Bot:
@@ -467,8 +483,11 @@ class Bot:
         # ---- target selection
         target = None
         best = 1e18
+        recently_hit = (t - self.last_damage_t) < 3.0
         for e in enemies:
-            if e["_d"] > 240:
+            if e["_d"] > P["engage_r"]:
+                continue
+            if P["passive"] and e["_d"] > P["close_r"] and not recently_hit:
                 continue
             ez = e["pos"][2] + 4.5
             vis = w.los(muzzle, (e["pos"][0], e["pos"][1], ez))
@@ -504,33 +523,55 @@ class Bot:
                 laser_busy = cur1 == "laser" and weps[1].get("charge", 0) > 0
                 if not laser_busy:
                     take = (p["id"], 1 if cur1 else None)
-            elif dd < 90 and w.walkable(p["pos"][0], p["pos"][1]) and abs(p["pos"][2] - w.ground(p["pos"][0], p["pos"][1])) < 2.0:
+            elif dd < P["loot_r"] and w.walkable(p["pos"][0], p["pos"][1]) and abs(p["pos"][2] - w.ground(p["pos"][0], p["pos"][1])) < 2.0:
                 if loot_goal is None or dd < loot_goal[2]:
                     loot_goal = (p["pos"][0], p["pos"][1], dd, "weapon")
         if take:
             act["take"] = take[0]
             if take[1] is not None:
                 act["drop"] = take[1]
+        # ---- zone-feasibility of a goal point
+        ncx, ncy = zone["next_center"]
+        nr = zone["next_radius"]
+
+        def zone_ok(px, py):
+            dn = math.hypot(px - ncx, py - ncy)
+            if dn <= nr * 0.85:
+                return True
+            # outside the next circle: only while there is plenty of time before the shrink
+            return time_to_shrink > d2((px, py), pos) / 9.0 + dn / 9.0 + 15.0 and t < zone["shrink_start"]
+
+        cube_goal = None
         for c in obs.get("cubes", []):
             dd = d2(c["pos"], pos)
-            if dd < 70 and abs(c["pos"][2] - w.ground(c["pos"][0], c["pos"][1])) < 2.0 and w.walkable(c["pos"][0], c["pos"][1]):
-                if loot_goal is None or dd < loot_goal[2] + 10:
-                    loot_goal = (c["pos"][0], c["pos"][1], dd, "cube")
+            if dd < P["cube_r"] and abs(c["pos"][2] - w.ground(c["pos"][0], c["pos"][1])) < 2.5 and w.walkable(c["pos"][0], c["pos"][1]) and zone_ok(c["pos"][0], c["pos"][1]):
+                if cube_goal is None or dd < cube_goal[2]:
+                    cube_goal = (c["pos"][0], c["pos"][1], dd)
         crate_tgt = None
         for c in obs.get("crates", []):
             dd = d2(c["pos"], pos)
-            if dd < 60 and c["pos"][2] < z + 4 and self.ignore_crates.get(c["id"], 0) < 80:
-                cz = c["pos"][2] + 1.2
-                if w.los(muzzle, (c["pos"][0], c["pos"][1], cz)):
-                    if crate_tgt is None or dd < crate_tgt[1]:
-                        crate_tgt = (c, dd)
+            if dd < P["crate_r"] and abs(c["pos"][2] - w.ground(c["pos"][0], c["pos"][1])) < 3.0 and self.ignore_crates.get(c["id"], 0) < 120 and zone_ok(c["pos"][0], c["pos"][1]):
+                if crate_tgt is None or dd < crate_tgt[1]:
+                    crate_tgt = (c, dd)
         npc_tgt = None
-        if hp_frac > 0.65:
+        if hp_frac > P["npc_hp"]:
             for n in npcs:
                 dd = d2(n["pos"], pos)
-                if dd < 120 and w.los(muzzle, (n["pos"][0], n["pos"][1], n["pos"][2] + 1.75)):
+                if dd < P["npc_r"] and zone_ok(n["pos"][0], n["pos"][1]):
                     if npc_tgt is None or dd < npc_tgt[1]:
                         npc_tgt = (n, dd)
+        drop_goal = None
+        if P["drops"]:
+            for dr in obs.get("drops", []):
+                dp = dr["pos"]
+                dd = d2(dp, pos)
+                hold = dr.get("holder")
+                if hold is not None and hold != me["id"]:
+                    continue
+                if dd < P["drop_r"] and zone_ok(dp[0], dp[1]) and dr["lands_in"] < dd / 10.0 + 6.0:
+                    if not any(d2(e["pos"], dp) < 70 for e in enemies):
+                        if drop_goal is None or dd < drop_goal[2]:
+                            drop_goal = (dp[0], dp[1], dd, dr.get("radius", 8.0))
 
         # ---- threat model
         threats = [e for e in enemies if e["_d"] < 200]
@@ -538,7 +579,9 @@ class Bot:
         n_threats = len(threats)
         my_hp = me["hp"]
         strongest = max((e.get("hp", 1400) for e in threats), default=0)
-        losing = threats and (hp_frac < 0.35 or (hp_frac < 0.55 and (n_threats >= 2 or strongest > my_hp * 1.3)))
+        losing = threats and (hp_frac < P["retreat_hp"] or (hp_frac < P["retreat_hp_multi"] and (n_threats >= 2 or strongest > my_hp * 1.3)))
+        near_enemy = min((e["_d"] for e in enemies), default=999.0)
+        heal_mode = hp_frac < P["heal_to"] and not threats and (t - self.last_damage_t) > 0.5
 
         # ---- movement decision
         move = [0.0, 0.0]
@@ -546,15 +589,12 @@ class Bot:
         jump = False
         speed_scale = 1.0
         label = ""
+        farm_shoot = None
 
         if urgent_zone and zgoal is not None:
             label = "zone"
-            dv = self.go_to(me, self.zone_plan, zgoal, t)
-            move = dv
+            move = self.go_to(me, self.zone_plan, zgoal, t)
             boost = (not me["in_zone"]) or (time_to_shrink < d2(zgoal, pos) / 11.0 + 3) or (t >= zone["shrink_start"])
-            if target is not None and target["_d"] < 60:
-                # strafe a little while running
-                pass
         elif losing:
             label = "retreat"
             move = self.retreat_vector(me, threats, circle)
@@ -562,19 +602,59 @@ class Bot:
         elif target is not None:
             label = f"fight {target['id']}"
             move = self.fight_vector(me, target, slots, weps, circle)
+        elif cube_goal is not None and (near_enemy > 60 or hp_frac > 0.5):
+            label = "cube"
+            move = self.go_to(me, self.local_plan, (cube_goal[0], cube_goal[1]), t)
+            boost = cube_goal[2] > 30 and me["energy"] > 40
+        elif drop_goal is not None and calm:
+            dd = drop_goal[2]
+            if dd > drop_goal[3] - 3.0:
+                label = "drop"
+                move = self.go_to(me, self.local_plan, (drop_goal[0], drop_goal[1]), t)
+                boost = me["energy"] > 30
+            else:
+                label = "capture"
+                move = [0.0, 0.0]
+        elif heal_mode:
+            label = "heal"
+            hide = self.pick_hide(obs, circle)
+            if d2(hide, pos) > 3.0:
+                move = self.go_to(me, self.zone_plan, hide, t)
+                speed_scale = 0.4
         elif calm and loot_goal is not None:
             label = "loot " + loot_goal[3]
             move = self.go_to(me, self.local_plan, (loot_goal[0], loot_goal[1]), t)
-            if loot_goal[2] > 25:
-                speed_scale = 1.0
+        elif calm and npc_tgt is not None:
+            n, dd = npc_tgt
+            label = "npc"
+            vis = w.los(muzzle, (n["pos"][0], n["pos"][1], n["pos"][2] + 1.75))
+            stand = P["npc_stand"]
+            if dd > stand + 12 or not vis:
+                move = self.go_to(me, self.local_plan, (n["pos"][0], n["pos"][1]), t)
+            elif dd < stand - 10:
+                ax, ay = x - n["pos"][0], y - n["pos"][1]
+                nn = math.hypot(ax, ay) or 1
+                move = [ax / nn, ay / nn]
+            else:
+                move = self.fight_vector(me, n, slots, weps, circle, want=stand)
+            if vis:
+                farm_shoot = ("npc", n)
+        elif calm and crate_tgt is not None and P["crates"]:
+            c, dd = crate_tgt
+            label = "crate"
+            cz = c["pos"][2] + 1.2
+            vis = w.los(muzzle, (c["pos"][0], c["pos"][1], cz))
+            if dd > 35 or not vis:
+                move = self.go_to(me, self.local_plan, (c["pos"][0], c["pos"][1]), t)
+            if vis and dd < 120:
+                farm_shoot = ("crate", c)
         else:
             hide = self.pick_hide(obs, circle)
             dd = d2(hide, pos)
             if dd > 3.0:
                 label = "to-hide"
-                move = self.go_to(me, self.zone_plan if zgoal is None else self.zone_plan, hide, t)
+                move = self.go_to(me, self.zone_plan, hide, t)
                 if zgoal is None:
-                    # we are already safe: move quietly
                     speed_scale = 0.38 if dd < 120 and time_to_shrink > dd / 4.0 + 10 else 1.0
             else:
                 label = "hide"
@@ -616,25 +696,20 @@ class Bot:
         aim = None
         if target is not None:
             aim, fire = self.shoot(me, target, slots, weps, muzzle, t)
-        elif npc_tgt is not None and calm and not urgent_zone:
-            aim, fire = self.shoot(me, npc_tgt[0], slots, weps, muzzle, t, npc=True)
-            if npc_tgt[1] < 50:
-                # back off out of its aggro range while shooting
-                n = npc_tgt[0]
-                awayx, awayy = x - n["pos"][0], y - n["pos"][1]
-                nn = math.hypot(awayx, awayy) or 1
-                move = self.steer(me, [awayx / nn, awayy / nn])
-            label += " npc"
-        elif crate_tgt is not None and calm:
-            c, dd = crate_tgt
+        elif farm_shoot is not None and farm_shoot[0] == "npc":
+            aim, fire = self.shoot(me, farm_shoot[1], slots, weps, muzzle, t, npc=True)
+        elif farm_shoot is not None:
+            c = farm_shoot[1]
             fake = {"pos": [c["pos"][0], c["pos"][1], c["pos"][2] - 3.3], "vel": [0, 0, 0], "kind": "crate"}
             yaw, pitch, hd, _ = self.lead(me, fake, 252.0)
             aim = [yaw, pitch]
             gi = slots.get("gun")
-            if gi is not None and self.aligned(me, yaw, pitch, hd, 0.9):
+            if gi is not None and self.aligned(me, yaw, pitch, hd, 0.8):
                 fire[gi] = True
+            li = slots.get("lightning")
+            if li is not None and hd < 40 and abs(wrap(me["aim"][0] - yaw)) < 0.15 and me["energy"] > 40:
+                fire[li] = True
             self.ignore_crates[c["id"]] = self.ignore_crates.get(c["id"], 0) + 1
-            label += " crate"
         if aim is None:
             aim = self.idle_aim(obs, me, enemies, t, move)
 
@@ -724,7 +799,7 @@ class Bot:
             aim = [yaw, 0.0]
         return aim, fire
 
-    def fight_vector(self, me, tgt, slots, weps, circle):
+    def fight_vector(self, me, tgt, slots, weps, circle, want=None):
         x, y = me["pos"][0], me["pos"][1]
         tx, ty = tgt["pos"][0], tgt["pos"][1]
         d = d2((x, y), (tx, ty))
@@ -732,14 +807,16 @@ class Bot:
         px, py = -ry, rx
         if self.t > self.strafe_until:
             self.strafe_dir = random.choice([-1, 1])
-            self.strafe_until = self.t + random.uniform(0.7, 1.6)
+            self.strafe_until = self.t + random.uniform(P["strafe_min"], P["strafe_max"])
         # preferred range
-        if "lightning" in slots and me["energy"] > 20:
-            want = 28.0
+        if want is not None:
+            pass
+        elif "lightning" in slots and me["energy"] > 20:
+            want = P["want_lightning"]
         elif "laser" in slots:
-            want = 110.0
+            want = P["want_laser"]
         else:
-            want = 70.0
+            want = P["want_gun"]
         their = tgt.get("weapons", [])
         if "lightning" in their and "lightning" not in slots:
             want = max(want, 60.0)
