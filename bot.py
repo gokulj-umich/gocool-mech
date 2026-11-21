@@ -250,7 +250,7 @@ P = {
     "mode_detect": True,        # deaths we did not cause early -> real free-for-all -> survival mode
     "backstab_laser_first": True,
     "smart_targets": True,      # prefer wounded / facing-away / exposed / laser-charging targets, avoid escorted ones
-    "converge_n": 3,            # this many enemies with eyes on us -> break line of sight first
+    "converge_n": 2,            # this many enemies with eyes on us -> break line of sight first
     "recover_hp": 0.6,          # after a retreat, only re-engage above this HP (or for an easy finish)
     "endgame_t": 330.0,
     "commit": True,            # v13-B: stick to one target until dead, prefer isolated ones, burst->survival on heat
