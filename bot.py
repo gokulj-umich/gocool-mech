@@ -250,7 +250,7 @@ P = {
     "mode_detect": True,        # deaths we did not cause early -> real free-for-all -> survival mode
     "backstab_laser_first": True,
     "smart_targets": True,      # prefer wounded / facing-away / exposed / laser-charging targets, avoid escorted ones
-    "gang_escape": True,        # v19: hit by >= gang_n different mechs within gang_window s -> retreat gang_hold s
+    "gang_escape": False,        # v19: hit by >= gang_n different mechs within gang_window s -> retreat gang_hold s
     "gang_n": 2, "gang_window": 3.0, "gang_hold": 4.0,
     "converge_n": 3,            # this many enemies with eyes on us -> break line of sight first
     "recover_hp": 0.6,          # after a retreat, only re-engage above this HP (or for an easy finish)
@@ -279,6 +279,10 @@ P = {
 }
 P.update({"press_hp": 0.45, "press_gap": 0.25, "press_r": 45.0, "forget_dead": False, "farm_hp_gate": False, "drone_avoid": False, "drone_avoid_hp": 0.8,
           "press_multi_block": False, "fight_boost": True, "retreat_hidden_w": 60.0, "gang_fire": True})
+# v22 INFORMED BERSERK: keep the caution that real scores proved (survival switch @2, pack skip,
+# break LOS @3 watchers); drop untested caution that keeps us out of fights; add lab bug fixes.
+P.update({"recover_hp": 0.0, "endgame_t": 9999.0, "retreat_hp_multi": 0.25,
+          "drone_avoid": True, "forget_dead": True, "farm_hp_gate": True})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
     import json as _json
