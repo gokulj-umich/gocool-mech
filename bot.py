@@ -274,6 +274,12 @@ P = {
     "drops": True, "drop_r": 200.0, "heal_to": 0.6,
     "drop_heal": True,          # v15: supply drop = full heal + 3 cubes; go for it mid-fight, keep moving while capturing
 }
+P.update({"press_multi_block": False, "fight_boost": True, "retreat_hidden_w": 60.0, "gang_fire": True})
+try:   # lab only: variant overrides from the environment (never set in the match container)
+    import json as _json
+    P.update(_json.loads(os.environ.get("GOCOOL_P", "{}") or "{}"))
+except Exception:
+    pass
 
 UPGRADE_PRIORITY = ["plating", "laser_damage", "laser_charge", "armor", "gun_rate", "gun_damage", "nanites",
                     "lightning_efficiency", "servos", "lightning_range", "sensors", "gun_mag",
@@ -307,6 +313,7 @@ class Bot:
         self.last_damage_t = -99.0
         self.hits_by = []         # v19: (t, attacker id) for recent damage
         self.gang_until = -99.0
+        self.cur_threats = []
         self.scan_phase = random.random() * TAU
         self.hide_goal = None
         self.hide_key = None
@@ -739,6 +746,7 @@ class Bot:
 
         # ---- threat model
         threats = [e for e in enemies if e["_d"] < 200]
+        self.cur_threats = [e for e in threats if e["_d"] < 150]
         under_fire = (t - self.last_damage_t) < 1.5
         n_threats = len(threats)
         my_hp = me["hp"]
@@ -828,7 +836,7 @@ class Bot:
                     move = self.go_to(me, self.local_plan, pk, t)
             if P["aggressive"]:
                 charging = "laser" in slots and (weps[slots["laser"]].get("charge", 0) or 0) > 0
-                boost = me["energy"] > 45 and not charging and (int(t * 2.0) % 3 == 0)
+                boost = P["fight_boost"] and me["energy"] > 45 and not charging and (int(t * 2.0) % 3 == 0)
             if P["reload_cover"] and target["_d"] < 180:
                 gi_ = slots.get("gun")
                 reloading = gi_ is not None and weps[gi_].get("reload", 0) > 0.4
@@ -1109,7 +1117,8 @@ class Bot:
         if P["aggressive"]:
             thp = tgt.get("hp", 1400) / max(tgt.get("max_hp", 1400), 1)
             myhp = me["hp"] / max(me["max_hp"], 1)
-            if thp < 0.45 or thp < myhp - 0.25:
+            crowd = sum(1 for e in self.cur_threats if e.get("id") != tgt.get("id")) if P["press_multi_block"] else 0
+            if (thp < 0.45 or thp < myhp - 0.25) and crowd == 0:
                 want = min(want, 45.0)  # press the kill
         their = tgt.get("weapons", [])
         if "lightning" in their and "lightning" not in slots:
@@ -1350,7 +1359,7 @@ class Bot:
                         hidden += 1
                 away = sum(d2((px, py), e["pos"]) - e["_d"] for e in threats[:4])
                 inz = math.hypot(px - cx, py - cy) <= max(r - 5, mr)
-                sc = hidden * 60 + away * 0.6 - ring * 0.5 + (0 if inz else -200)
+                sc = hidden * P["retreat_hidden_w"] + away * 0.6 - ring * 0.5 + (0 if inz else -200)
                 if not w.clear_line((x, y), (px, py)):
                     sc -= 80
                 if sc > best:
