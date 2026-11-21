@@ -278,6 +278,7 @@ P = {
     "drop_heal": True,          # v15: supply drop = full heal + 3 cubes; go for it mid-fight, keep moving while capturing
 }
 P.update({"press_multi_block": False, "fight_boost": True, "retreat_hidden_w": 60.0, "gang_fire": True})
+LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
     import json as _json
     P.update(_json.loads(os.environ.get("GOCOOL_P", "{}") or "{}"))
@@ -1014,6 +1015,11 @@ class Bot:
                 act["reload"] = True
 
         act.update(move=move, boost=bool(boost), jump=bool(jump), aim=aim, fire=fire)
+        if LABLOG and int(t * 10) % 10 == 0:
+            vis_n = sum(1 for e in enemies if e.get("_los"))
+            sys.stderr.write("L %.0f %s|tgt=%s|d=%s|n=%d|vis=%d|hp=%.2f|surv=%d|rec=%d|fire=%s\n" % (
+                t, label, target["id"] if target is not None else "-", int(target["_d"]) if target is not None else "-",
+                len(enemies), vis_n, hp_frac, int(self.survival), int(self.recovering), "".join("1" if f else "0" for f in fire)))
         mf.draw.label(f"{label} hp{me['hp']:.0f}")
         return act
 
