@@ -282,6 +282,7 @@ P.update({"press_hp": 0.45, "press_gap": 0.25, "press_r": 45.0, "forget_dead": F
 # v22 INFORMED BERSERK: keep the caution that real scores proved (survival switch @2, pack skip,
 # break LOS @3 watchers); drop untested caution that keeps us out of fights; add lab bug fixes.
 P.update({"laser_grab": True, "laser_grab_r": 90.0, "cube_grab": True, "cube_grab_r": 70.0,
+          "powerup_until": 150.0, "powerup_r": 200.0, "npc_r": 220.0,   # v26 farm-first opening
           "recover_hp": 0.0, "endgame_t": 9999.0, "retreat_hp_multi": 0.25,
           "drone_avoid": True, "forget_dead": True, "farm_hp_gate": True})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
