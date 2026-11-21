@@ -227,24 +227,27 @@ P = {
     "passive": False,       # if True: only fight when close (< close_r) or recently shot at
     "close_r": 100.0,
     "strafe_min": 0.35, "strafe_max": 0.9,
-    "want_gun": 70.0, "want_laser": 150.0, "want_lightning": 24.0,
+    "want_gun": 80.0, "want_laser": 100.0, "want_lightning": 28.0,
     "retreat_hp": 0.35, "retreat_hp_multi": 0.55,
     "loot_r": 90.0, "npc_hp": 0.65, "crates": True,
     "laser_first": True,
-    "lightning_top": True,     # rank lightning above laser
-    "reload_cover": True,      # step out of sight while the gun reloads
-    "hide_shuffle": True,      # never stand perfectly still while hiding
+    "lightning_top": False,     # rank lightning above laser
+    "reload_cover": False,      # step out of sight while the gun reloads
+    "hide_shuffle": False,
+    "pacifist": False,         # diagnostic: never fight, only hide/evade      # never stand perfectly still while hiding
     "cube_r": 110.0, "crate_r": 110.0, "npc_r": 160.0, "npc_stand": 62.0,
+    "laser_hunt_r": 220.0,
     "drops": True, "drop_r": 170.0, "heal_to": 0.8,
 }
 
-UPGRADE_PRIORITY = ["plating", "armor", "nanites", "gun_rate", "gun_damage", "lightning_efficiency",
-                    "laser_charge", "laser_damage", "servos", "lightning_range", "sensors", "gun_mag",
+UPGRADE_PRIORITY = ["plating", "laser_damage", "laser_charge", "armor", "gun_rate", "gun_damage", "nanites",
+                    "lightning_efficiency", "servos", "lightning_range", "sensors", "gun_mag",
                     "gun_velocity", "gyros", "lightning_chain", "reactor", "capacitor", "jets",
                     "mortar_reload", "mortar_velocity", "mortar_splash", "laser_pierce"]
 WEAPON_RANK = {"lightning": 3.0, "laser": 2.6, "mortar": 1.0, "gun": 0.0}
 if P["laser_first"]:
-    WEAPON_RANK["laser"] = 3.2
+    WEAPON_RANK["laser"] = 4.0
+    WEAPON_RANK["lightning"] = 2.5
 if P.get("lightning_top"):
     WEAPON_RANK["lightning"] = 3.5
 
@@ -490,6 +493,8 @@ class Bot:
         best = 1e18
         recently_hit = (t - self.last_damage_t) < 3.0
         for e in enemies:
+            if P["pacifist"]:
+                break
             if e["_d"] > P["engage_r"]:
                 continue
             if P["passive"] and e["_d"] > P["close_r"] and not recently_hit:
@@ -531,6 +536,15 @@ class Bot:
             elif dd < P["loot_r"] and w.walkable(p["pos"][0], p["pos"][1]) and abs(p["pos"][2] - w.ground(p["pos"][0], p["pos"][1])) < 2.0:
                 if loot_goal is None or dd < loot_goal[2]:
                     loot_goal = (p["pos"][0], p["pos"][1], dd, "weapon")
+        laser_goal = None
+        if "laser" not in slots:
+            for p in obs.get("pickups", []):
+                if p["kind"] != "laser":
+                    continue
+                dd = d2(p["pos"], pos)
+                if dd < P["laser_hunt_r"] and abs(p["pos"][2] - w.ground(p["pos"][0], p["pos"][1])) < 2.5 and w.walkable(p["pos"][0], p["pos"][1]):
+                    if laser_goal is None or dd < laser_goal[2]:
+                        laser_goal = (p["pos"][0], p["pos"][1], dd)
         if take:
             act["take"] = take[0]
             if take[1] is not None:
@@ -584,7 +598,7 @@ class Bot:
         n_threats = len(threats)
         my_hp = me["hp"]
         strongest = max((e.get("hp", 1400) for e in threats), default=0)
-        losing = threats and (hp_frac < P["retreat_hp"] or (hp_frac < P["retreat_hp_multi"] and (n_threats >= 2 or strongest > my_hp * 1.3)))
+        losing = (P["pacifist"] and bool(threats)) or threats and (hp_frac < P["retreat_hp"] or (hp_frac < P["retreat_hp_multi"] and (n_threats >= 2 or strongest > my_hp * 1.3)))
         near_enemy = min((e["_d"] for e in enemies), default=999.0)
         heal_mode = hp_frac < P["heal_to"] and not threats and (t - self.last_damage_t) > 0.5
 
@@ -604,6 +618,10 @@ class Bot:
             label = "retreat"
             move = self.retreat_vector(me, threats, circle)
             boost = me["energy"] > 25
+        elif laser_goal is not None and (target is None or (target["_d"] > 110 and laser_goal[2] < 70)) and min((e["_d"] for e in enemies), default=999) > 70:
+            label = "get-laser"
+            move = self.go_to(me, self.local_plan, (laser_goal[0], laser_goal[1]), t)
+            boost = laser_goal[2] > 20 and me["energy"] > 30
         elif target is not None:
             label = f"fight {target['id']}"
             move = self.fight_vector(me, target, slots, weps, circle)
@@ -766,26 +784,34 @@ class Bot:
                 aim = [yaw, 0.0]
                 if abs(wrap(me["aim"][0] - yaw)) < math.radians(lw["stats"].get("cone_deg", 30) * 0.4) and lw.get("cooldown", 0) <= 0.05 and me["energy"] >= lw["stats"].get("energy", 3):
                     fire[li] = True
-        # laser
+        # laser (hitscan) + gun: while the laser charges we aim with gun lead so the gun keeps firing;
+        # in the last moment we switch to the exact (no-lead) laser line and release when aligned.
         la = slots.get("laser")
+        gi = slots.get("gun")
+        laser_aim_now = False
         if la is not None and not (li is not None and fire[li]):
             lw = weps[la]
             rng = lw["stats"].get("range", 280)
             charge = lw.get("charge", 0) or 0
             full = lw["stats"].get("charge", 0.75)
-            yaw, pitch, hd, _ = self.lead(me, tgt, 1e9)
+            hold = lw["stats"].get("hold_s", 2.0)
+            ly, lp, lhd, _ = self.lead(me, tgt, 1e9)
             if d < rng * 0.97 and vis and t >= self.shorted_until and (li is None or d > 30):
-                if aim is None:
-                    aim = [yaw, pitch]
                 if lw.get("cooldown", 0) <= 0.15:
-                    if charge < full - 0.05:
+                    if charge < full - 0.12:
                         fire[la] = True  # keep charging
-                    elif not self.aligned(me, yaw, pitch, hd, 1.3):
-                        fire[la] = charge < full + lw["stats"].get("hold_s", 2.0) - 0.3
                     else:
-                        fire[la] = False  # release -> fires
+                        laser_aim_now = True
+                        aim = [ly, lp]
+                        if self.aligned(me, ly, lp, lhd, 1.4):
+                            fire[la] = False  # release -> beam fires
+                        else:
+                            fire[la] = charge < full + hold - 0.25
             elif charge > 0.2:
-                fire[la] = False  # release whatever we have
+                if vis or charge > full + hold - 0.3:
+                    fire[la] = False
+                else:
+                    fire[la] = True  # keep the charge while we wait for a line
         # mortar
         mo = slots.get("mortar")
         if mo is not None and not npc:
@@ -798,13 +824,12 @@ class Bot:
                     if self.aligned(me, yaw, pitch, D, 2.0):
                         fire[mo] = True
         # gun
-        gi = slots.get("gun")
         if gi is not None:
             gw = weps[gi]
             spd = gw["stats"].get("speed", 252)
             rng = gw["stats"].get("range", 230)
             yaw, pitch, hd, _ = self.lead(me, tgt, spd)
-            if aim is None:
+            if aim is None or (not laser_aim_now and li is None):
                 aim = [yaw, pitch]
             if vis and hd < rng * 0.97 and gw.get("ammo", 1) > 0 and gw.get("reload", 0) == 0:
                 tol = 2.2 if not npc else 1.2
