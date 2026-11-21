@@ -555,7 +555,7 @@ class Bot:
         heat = sum(1 for v in self.seen_at.values() if t - v < 20.0)
         if P["commit"]:
             hpf_now = me["hp"] / max(me["max_hp"], 1.0)
-            if not self.survival and (heat >= P["heat_max"] and hpf_now < 0.75):
+            if False and not self.survival and (heat >= P["heat_max"] and hpf_now < 0.75):
                 self.survival = True
             elif self.survival and heat <= 1 and hpf_now > 0.85 and t < P["endgame_t"]:
                 self.survival = False
