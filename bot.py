@@ -1427,6 +1427,26 @@ class Bot:
         n = math.hypot(vx, vy) or 1
         return [vx / n, vy / n]
 
+    def duck_point(self, me, e):
+        """v32 laser duck: a nearby reachable spot the charging enemy cannot see -> strong move vector."""
+        x, y, z = me["pos"]
+        eye = (e["pos"][0], e["pos"][1], e["pos"][2] + 7.0)
+        best = None
+        for r in (4.0, 7.0, 10.0):
+            for k in range(12):
+                a = k * math.pi / 6
+                cx, cy = x + math.cos(a) * r, y + math.sin(a) * r
+                if not self.w.walkable(cx, cy) or not self.w.clear_line((x, y), (cx, cy)):
+                    continue
+                gz = self.w.ground(cx, cy)
+                if self.w.los(eye, (cx, cy, gz + 4.5)) or self.w.los(eye, (cx, cy, gz + 8.0)):
+                    continue
+                best = (math.cos(a) * 1.6, math.sin(a) * 1.6)
+                break
+            if best is not None:
+                break
+        return best
+
     def dodge_vector(self, obs, me, enemies):
         x, y, z = me["pos"]
         cz = z + 4.5
@@ -1439,6 +1459,9 @@ class Bot:
                     px, py = -math.sin(b), math.cos(b)
                     s = 1 if (int(self.t * 1.3) % 2 == 0) else -1
                     best = (px * s, py * s)
+                    dk = self.duck_point(me, e)
+                    if dk is not None:
+                        return dk
         # bullets / shells
         for p in obs.get("projectiles", []):
             px, py, pz = p["pos"]
