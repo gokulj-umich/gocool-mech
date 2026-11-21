@@ -257,6 +257,7 @@ P = {
     "heat_max": 3,
     "ghost_max_age": 12.0,      # v13-C sets 5.5 (only stalk while the estimate is trustworthy)
     "roof_safe": False,         # v13-C: opportunistic rooftop with safe exits (retreat/convergence always win)
+    "probe_t": 150.0,           # DIAGNOSTIC: after this time walk out of the zone and do not fight
     "standoff": True,           # v13-A: laser (hitscan) vs gun-only bots at ~180 m, where their bullets need 0.7 s
     "standoff_r": 180.0,
     "powerup_until": 100.0,     # opening: cubes first (crates, drones), only fight bots that are close or shooting us
@@ -766,7 +767,15 @@ class Bot:
         label = ""
         farm_shoot = None
 
-        if urgent_zone and zgoal is not None:
+        if t >= P["probe_t"]:
+            label = "probe-exit"
+            zc = obs["zone"]["center"]
+            ax_, ay_ = x - zc[0], y - zc[1]
+            nn_ = math.hypot(ax_, ay_) or 1.0
+            move = [ax_ / nn_, ay_ / nn_]
+            boost = me["energy"] > 10
+            target = None
+        elif urgent_zone and zgoal is not None:
             label = "zone"
             move = self.go_to(me, self.zone_plan, zgoal, t)
             boost = (not me["in_zone"]) or (time_to_shrink < d2(zgoal, pos) / 11.0 + 3) or (t >= zone["shrink_start"])
