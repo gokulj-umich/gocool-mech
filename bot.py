@@ -629,6 +629,10 @@ class Bot:
                     sc -= 50.0 + (40.0 if thp < 0.6 else 0.0)   # finish what we started
                 if self.survival and not easy:
                     continue
+            if "laser" in e.get("weapons", []) and not easy:
+                _b = math.atan2(y - e["pos"][1], x - e["pos"][0])
+                if abs(wrap(e["aim"][0] - _b)) < math.pi / 2:
+                    continue  # laser carrier facing us: hitscan vs hitscan, not worth it
             if sc < best:
                 best, target = sc, e
         self.cur_tid = target["id"] if target is not None else (
@@ -741,7 +745,8 @@ class Bot:
             b_e2me = math.atan2(y - e["pos"][1], x - e["pos"][0])
             if e["_d"] < 150 and abs(wrap(e["aim"][0] - b_e2me)) < 0.35:
                 eyes_on_us += 1
-        converging = P["smart_targets"] and eyes_on_us >= P["converge_n"]
+        laser_threat = any(e.get("charging") and e["_d"] < 280 and abs(wrap(e["aim"][0] - math.atan2(y - e["pos"][1], x - e["pos"][0]))) < 0.12 for e in threats) and (target is None or "laser" not in target.get("weapons", []))
+        converging = (P["smart_targets"] and eyes_on_us >= P["converge_n"]) or laser_threat
         losing = converging or (P["pacifist"] and bool(threats)) or (P["stealth"] and bool(threats) and target is None) or threats and (hp_frac < P["retreat_hp"] or (hp_frac < P["retreat_hp_multi"] and (n_threats >= 2 or strongest > my_hp * 1.3)))
         near_enemy = min((e["_d"] for e in enemies), default=999.0)
         heal_mode = hp_frac < (0.85 if self.survival else P["heal_to"]) and not threats and (t - self.last_damage_t) > 0.5
