@@ -233,7 +233,7 @@ P = {
     "engage_r": 240.0,      # start fighting visible mechs within this range
     "passive": False,       # if True: only fight when close (< close_r) or recently shot at
     "close_r": 100.0,
-    "strafe_min": 0.35, "strafe_max": 0.9,
+    "strafe_min": 0.25, "strafe_max": 0.6,
     "want_gun": 80.0, "want_laser": 100.0, "want_lightning": 28.0,
     "retreat_hp": 0.22, "retreat_hp_multi": 0.38,
     "loot_r": 110.0, "npc_hp": 0.45, "crates": True,
