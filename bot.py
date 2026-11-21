@@ -252,7 +252,9 @@ P = {
     "smart_targets": True,      # prefer wounded / facing-away / exposed / laser-charging targets, avoid escorted ones
     "converge_n": 3,            # this many enemies with eyes on us -> break line of sight first
     "recover_hp": 0.6,          # after a retreat, only re-engage above this HP (or for an easy finish)
-    "endgame_t": 330.0,         # final-burn prep: only close / finishing / forced fights after this           # roam to find house bots early and prefer ones facing away (rear hits x1.5)
+    "endgame_t": 330.0,
+    "powerup_until": 100.0,     # opening: cubes first (crates, drones), only fight bots that are close or shooting us
+    "powerup_r": 150.0,         # final-burn prep: only close / finishing / forced fights after this           # roam to find house bots early and prefer ones facing away (rear hits x1.5)
     "roam_until": 300.0, "roam_hp": 0.6,
     "aggressive": True,
     "hunt_hidden": True,
@@ -571,6 +573,8 @@ class Bot:
                 break
             if P["stealth"] and e["_d"] > P["stealth_fight_r"] and not recently_hit:
                 continue
+            if t < P["powerup_until"] and e["_d"] > 120 and not recently_hit:
+                continue
             if e["_d"] > P["engage_r"]:
                 continue
             if P["passive"] and e["_d"] > P["close_r"] and not recently_hit:
@@ -673,14 +677,14 @@ class Bot:
         crate_tgt = None
         for c in obs.get("crates", []):
             dd = d2(c["pos"], pos)
-            if dd < P["crate_r"] and abs(c["pos"][2] - w.ground(c["pos"][0], c["pos"][1])) < 3.0 and self.ignore_crates.get(c["id"], 0) < 120 and zone_ok(c["pos"][0], c["pos"][1]):
+            if dd < (P["powerup_r"] if t < P["powerup_until"] else P["crate_r"]) and abs(c["pos"][2] - w.ground(c["pos"][0], c["pos"][1])) < 3.0 and self.ignore_crates.get(c["id"], 0) < 120 and zone_ok(c["pos"][0], c["pos"][1]):
                 if crate_tgt is None or dd < crate_tgt[1]:
                     crate_tgt = (c, dd)
         npc_tgt = None
         if hp_frac > P["npc_hp"]:
             for n in npcs:
                 dd = d2(n["pos"], pos)
-                if dd < P["npc_r"] and zone_ok(n["pos"][0], n["pos"][1]):
+                if dd < (max(P["npc_r"], 200.0) if t < P["powerup_until"] else P["npc_r"]) and zone_ok(n["pos"][0], n["pos"][1]):
                     if npc_tgt is None or dd < npc_tgt[1]:
                         npc_tgt = (n, dd)
         drop_goal = None
@@ -780,13 +784,13 @@ class Bot:
         elif pp_res is not None:
             label = pp_res["label"]
             move, boost = pp_res["move"], pp_res["boost"]
-        elif (P["ghost_hunt"] and not P["stealth"] and ghost is not None and hp_frac > 0.55 and not heal_mode
+        elif (P["ghost_hunt"] and not P["stealth"] and t >= P["powerup_until"] and ghost is not None and hp_frac > 0.55 and not heal_mode
               and zone_ok(ghost["pos"][0], ghost["pos"][1])):
             label = f"stalk {ghost['id']}"
             pk = self.peek_point(me, ghost, muzzle, t)
             move = self.go_to(me, self.local_plan, pk if pk is not None else (ghost["pos"][0], ghost["pos"][1]), t)
             farm_shoot = ("ghost", ghost)
-        elif (P["hunt_hidden"] and not P["stealth"] and self.heard is not None and t - self.heard[2] < 3.0 and hp_frac > 0.5
+        elif (P["hunt_hidden"] and not P["stealth"] and t >= P["powerup_until"] and self.heard is not None and t - self.heard[2] < 3.0 and hp_frac > 0.5
               and not heal_mode and zone_ok(x + math.cos(self.heard[0]) * self.heard[1], y + math.sin(self.heard[0]) * self.heard[1])):
             b, dm, _ = self.heard
             label = "hunt-sound"
@@ -814,7 +818,7 @@ class Bot:
         elif calm and loot_goal is not None:
             label = "loot " + loot_goal[3]
             move = self.go_to(me, self.local_plan, (loot_goal[0], loot_goal[1]), t)
-        elif calm and npc_tgt is not None and not P["stealth"]:
+        elif (calm or (t < P["powerup_until"] and target is None)) and npc_tgt is not None and not P["stealth"]:
             n, dd = npc_tgt
             label = "npc"
             vis = w.los(muzzle, (n["pos"][0], n["pos"][1], n["pos"][2] + 1.75))
@@ -829,7 +833,7 @@ class Bot:
                 move = self.fight_vector(me, n, slots, weps, circle, want=stand)
             if vis:
                 farm_shoot = ("npc", n)
-        elif calm and crate_tgt is not None and P["crates"] and not P["stealth"]:
+        elif (calm or (t < P["powerup_until"] and target is None)) and crate_tgt is not None and P["crates"] and not P["stealth"]:
             c, dd = crate_tgt
             label = "crate"
             cz = c["pos"][2] + 1.2
