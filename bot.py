@@ -756,7 +756,7 @@ class Bot:
                 move = self.fight_vector(me, n, slots, weps, circle, want=stand)
             if vis:
                 farm_shoot = ("npc", n)
-        elif calm and crate_tgt is not None and P["crates"] and not P["stealth"] and (not P["assassin"] or crate_tgt[1] < 40.0):
+        elif calm and crate_tgt is not None and P["crates"] and not P["stealth"]:
             c, dd = crate_tgt
             label = "crate"
             cz = c["pos"][2] + 1.2
