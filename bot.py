@@ -238,7 +238,7 @@ P = {
     "stealth": False,            # survive to the final burn: stay unseen, silent, fight only when cornered
     "stealth_fight_r": 50.0,
     "assassin": True,           # roam to find house bots early and prefer ones facing away (rear hits x1.5)
-    "roam_until": 330.0,
+    "roam_until": 480.0, "roam_hp": 0.5,
     "aggressive": True,
     "hunt_hidden": True,
     "hold_angles": False,
@@ -756,7 +756,7 @@ class Bot:
                 move = self.fight_vector(me, n, slots, weps, circle, want=stand)
             if vis:
                 farm_shoot = ("npc", n)
-        elif calm and crate_tgt is not None and P["crates"] and not P["stealth"]:
+        elif calm and crate_tgt is not None and P["crates"] and not P["stealth"] and (not P["assassin"] or crate_tgt[1] < 40.0):
             c, dd = crate_tgt
             label = "crate"
             cz = c["pos"][2] + 1.2
@@ -765,7 +765,7 @@ class Bot:
                 move = self.go_to(me, self.local_plan, (c["pos"][0], c["pos"][1]), t)
             if vis and dd < 120:
                 farm_shoot = ("crate", c)
-        elif P["assassin"] and t < P["roam_until"] and hp_frac > 0.6 and not heal_mode:
+        elif P["assassin"] and t < P["roam_until"] and hp_frac > P["roam_hp"] and not heal_mode:
             label = "roam"
             rp = self.roam_point(obs, circle, t)
             move = self.go_to(me, self.zone_plan, rp, t)
