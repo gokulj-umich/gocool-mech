@@ -253,6 +253,8 @@ P = {
     "converge_n": 3,            # this many enemies with eyes on us -> break line of sight first
     "recover_hp": 0.6,          # after a retreat, only re-engage above this HP (or for an easy finish)
     "endgame_t": 330.0,
+    "return_fire": True,        # v14: shoot visible attackers even when we decline to engage them
+    "return_fire_r": 230.0,
     "commit": True,            # v13-B: stick to one target until dead, prefer isolated ones, burst->survival on heat
     "heat_max": 2,
     "ghost_max_age": 12.0,      # v13-C sets 5.5 (only stalk while the estimate is trustworthy)
@@ -633,6 +635,23 @@ class Bot:
                 best, target = sc, e
         self.cur_tid = target["id"] if target is not None else (
             self.cur_tid if self.cur_tid in self.tracks and t - self.tracks[self.cur_tid]["t"] < 5.0 else None)
+        # return fire: an attacker we chose not to engage (pack, survival, endgame) still gets shot at
+        fire_tgt = None
+        if P["return_fire"] and target is None and not P["pacifist"]:
+            fb = 1e18
+            for e in enemies:
+                if e["_d"] > P["return_fire_r"]:
+                    continue
+                b_e2me = math.atan2(y - e["pos"][1], x - e["pos"][0])
+                facing = abs(wrap(e["aim"][0] - b_e2me)) < 0.35
+                if not (recently_hit or facing or e["_d"] < 150):
+                    continue
+                if not w.los(muzzle, (e["pos"][0], e["pos"][1], e["pos"][2] + 4.5)):
+                    continue
+                e["_los"] = True
+                sc = e["_d"] + e.get("hp", 1400) * 0.05 - (40.0 if facing else 0.0)
+                if sc < fb:
+                    fb, fire_tgt = sc, e
         # NPC/crate farming only when no mechs around
         farm = None
         calm = (t - self.enemy_seen_t > 4.0) and (t - self.last_damage_t > 3.0)
@@ -814,6 +833,9 @@ class Bot:
         elif pp_res is not None:
             label = pp_res["label"]
             move, boost = pp_res["move"], pp_res["boost"]
+        elif fire_tgt is not None:
+            label = f"return-fire {fire_tgt['id']}"
+            move = self.retreat_vector(me, threats or [fire_tgt], circle)
         elif (P["ghost_hunt"] and not P["stealth"] and not self.survival and t >= P["powerup_until"] and ghost is not None and hp_frac > 0.55 and not heal_mode
               and zone_ok(ghost["pos"][0], ghost["pos"][1])):
             label = f"stalk {ghost['id']}"
@@ -937,6 +959,8 @@ class Bot:
         aim = None
         if target is not None:
             aim, fire = self.shoot(me, target, slots, weps, muzzle, t)
+        elif fire_tgt is not None:
+            aim, fire = self.shoot(me, fire_tgt, slots, weps, muzzle, t)
         elif farm_shoot is not None and farm_shoot[0] == "ghost":
             gh = farm_shoot[1]
             aim, fire = self.shoot(me, gh, slots, weps, muzzle, t)
@@ -960,7 +984,7 @@ class Bot:
 
         # reload when idle and low
         g = slots.get("gun")
-        if g is not None and target is None:
+        if g is not None and target is None and fire_tgt is None:
             gw = weps[g]
             if gw.get("ammo", 12) <= 5 and gw.get("reload", 0) == 0:
                 act["reload"] = True
