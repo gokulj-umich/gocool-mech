@@ -281,7 +281,8 @@ P.update({"press_hp": 0.45, "press_gap": 0.25, "press_r": 45.0, "forget_dead": F
           "press_multi_block": False, "fight_boost": True, "retreat_hidden_w": 60.0, "gang_fire": True})
 # v22 INFORMED BERSERK: keep the caution that real scores proved (survival switch @2, pack skip,
 # break LOS @3 watchers); drop untested caution that keeps us out of fights; add lab bug fixes.
-P.update({"recover_hp": 0.0, "endgame_t": 9999.0, "retreat_hp_multi": 0.25,
+P.update({"laser_grab": True, "laser_grab_r": 90.0,
+          "recover_hp": 0.0, "endgame_t": 9999.0, "retreat_hp_multi": 0.25,
           "drone_avoid": True, "forget_dead": True, "farm_hp_gate": True})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
@@ -827,6 +828,13 @@ class Bot:
             label = "retreat"
             move = self.retreat_vector(me, threats, circle)
             boost = me["energy"] > 25
+        elif P["laser_grab"] and laser_goal is not None and laser_goal[2] < P["laser_grab_r"] and hp_frac > 0.3:
+            # v24: lasers mostly come from dead mechs (1272 drops vs 300 spawns in lab replays); we picked up
+            # only 5 of 44 lasers dropped by our own kills, usually lying 40-65 m away. Go take it now;
+            # aiming/firing at the current target continues while we move.
+            label = "grab-laser"
+            move = self.go_to(me, self.local_plan, (laser_goal[0], laser_goal[1]), t)
+            boost = laser_goal[2] > 12 and me["energy"] > 30
         elif laser_goal is not None and (target is None or (target["_d"] > 110 and laser_goal[2] < 70)) and min((e["_d"] for e in enemies), default=999) > 70:
             label = "get-laser"
             move = self.go_to(me, self.local_plan, (laser_goal[0], laser_goal[1]), t)
