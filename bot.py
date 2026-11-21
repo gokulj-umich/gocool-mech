@@ -277,7 +277,7 @@ P = {
     "drops": True, "drop_r": 200.0, "heal_to": 0.6,
     "drop_heal": True,          # v15: supply drop = full heal + 3 cubes; go for it mid-fight, keep moving while capturing
 }
-P.update({"press_r": 45.0, "forget_dead": False, "farm_hp_gate": False, "drone_avoid": False, "drone_avoid_hp": 0.8,
+P.update({"press_hp": 0.45, "press_gap": 0.25, "press_r": 45.0, "forget_dead": False, "farm_hp_gate": False, "drone_avoid": False, "drone_avoid_hp": 0.8,
           "press_multi_block": False, "fight_boost": True, "retreat_hidden_w": 60.0, "gang_fire": True})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
@@ -1153,7 +1153,7 @@ class Bot:
             thp = tgt.get("hp", 1400) / max(tgt.get("max_hp", 1400), 1)
             myhp = me["hp"] / max(me["max_hp"], 1)
             crowd = sum(1 for e in self.cur_threats if e.get("id") != tgt.get("id")) if P["press_multi_block"] else 0
-            if (thp < 0.45 or thp < myhp - 0.25) and crowd == 0:
+            if (thp < P["press_hp"] or thp < myhp - P["press_gap"]) and crowd == 0:
                 want = min(want, P["press_r"])  # press the kill
         their = tgt.get("weapons", [])
         if "lightning" in their and "lightning" not in slots:
