@@ -236,10 +236,12 @@ P = {
     "hide_shuffle": False,      # never stand perfectly still while hiding
     "pacifist": False,          # diagnostic: never fight, only hide/evade
     "aggressive": True,
-    "hunt_hidden": True,        # peek for a firing line, pre-charge laser, hunt toward sounds         # constant motion + boost jinks, chase wounded, retreat late
+    "hunt_hidden": True,
+    "hold_angles": True,        # hidden target pushing us -> hold still behind cover with a charged laser
+    "edge_hide": True,          # hide with back to a wall near the zone edge        # peek for a firing line, pre-charge laser, hunt toward sounds         # constant motion + boost jinks, chase wounded, retreat late
     "cube_r": 110.0, "crate_r": 110.0, "npc_r": 160.0, "npc_stand": 62.0,
     "laser_hunt_r": 320.0, "open_scan_s": 3.0,
-    "drops": True, "drop_r": 200.0, "heal_to": 0.6,
+    "drops": True, "drop_r": 200.0, "heal_to": 0.85,
 }
 
 UPGRADE_PRIORITY = ["plating", "laser_damage", "laser_charge", "armor", "gun_rate", "gun_damage", "nanites",
@@ -340,6 +342,8 @@ class Bot:
             self.hide_goal, self.hide_key = (px, py), key
             return self.hide_goal
         score = np.hypot(X - px, Y - py) * 0.25 + np.clip(sub_c - 3.5, 0, 30) * 1.5
+        if P.get("edge_hide"):
+            score = score + np.abs(np.hypot(X - cx, Y - cy) - mr * 0.85) * 0.15
         score = np.where(ok, score, 1e9)
         k = int(np.argmin(score))
         self.hide_goal = (float(X.ravel()[k]), float(Y.ravel()[k]))
@@ -646,7 +650,17 @@ class Bot:
         elif target is not None:
             label = f"fight {target['id']}"
             move = self.fight_vector(me, target, slots, weps, circle)
-            if P["hunt_hidden"] and not target.get("_los", True):
+            pushing = False
+            if not target.get("_los", True):
+                tvx, tvy = target["vel"][0], target["vel"][1]
+                rx_, ry_ = x - target["pos"][0], y - target["pos"][1]
+                rn_ = math.hypot(rx_, ry_) or 1.0
+                closing = (tvx * rx_ + tvy * ry_) / rn_
+                pushing = closing > 1.5 or target["_d"] < 55
+            if P["hold_angles"] and not target.get("_los", True) and pushing and hp_frac > 0.3:
+                label += " hold"
+                move = [0.0, 0.0]
+            elif P["hunt_hidden"] and not target.get("_los", True):
                 pk = self.peek_point(me, target, muzzle, t)
                 if pk is not None:
                     label += " peek"
@@ -662,7 +676,7 @@ class Bot:
                 if reloading and not other_ready:
                     label += " reload-cover"
                     move = self.retreat_vector(me, threats or [target], circle)
-        elif (P["hunt_hidden"] and self.heard is not None and t - self.heard[2] < 3.0 and hp_frac > 0.5
+        elif (P["hunt_hidden"] and self.heard is not None and t - self.heard[2] < 3.0 and hp_frac > 0.8
               and not heal_mode and zone_ok(x + math.cos(self.heard[0]) * self.heard[1], y + math.sin(self.heard[0]) * self.heard[1])):
             b, dm, _ = self.heard
             label = "hunt-sound"
