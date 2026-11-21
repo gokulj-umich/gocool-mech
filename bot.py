@@ -629,6 +629,8 @@ class Bot:
                     sc -= 50.0 + (40.0 if thp < 0.6 else 0.0)   # finish what we started
                 if self.survival and not easy:
                     continue
+            if "laser" in e.get("weapons", []):
+                sc -= 60.0  # remove the most dangerous bot first
             if sc < best:
                 best, target = sc, e
         self.cur_tid = target["id"] if target is not None else (
