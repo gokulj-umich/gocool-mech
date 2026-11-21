@@ -228,16 +228,17 @@ P = {
     "close_r": 100.0,
     "strafe_min": 0.35, "strafe_max": 0.9,
     "want_gun": 80.0, "want_laser": 100.0, "want_lightning": 28.0,
-    "retreat_hp": 0.35, "retreat_hp_multi": 0.55,
-    "loot_r": 90.0, "npc_hp": 0.65, "crates": True,
+    "retreat_hp": 0.22, "retreat_hp_multi": 0.38,
+    "loot_r": 110.0, "npc_hp": 0.45, "crates": True,
     "laser_first": True,
     "lightning_top": False,     # rank lightning above laser
     "reload_cover": False,      # step out of sight while the gun reloads
-    "hide_shuffle": False,
-    "pacifist": False,         # diagnostic: never fight, only hide/evade      # never stand perfectly still while hiding
+    "hide_shuffle": False,      # never stand perfectly still while hiding
+    "pacifist": False,          # diagnostic: never fight, only hide/evade
+    "aggressive": True,         # constant motion + boost jinks, chase wounded, retreat late
     "cube_r": 110.0, "crate_r": 110.0, "npc_r": 160.0, "npc_stand": 62.0,
-    "laser_hunt_r": 220.0,
-    "drops": True, "drop_r": 170.0, "heal_to": 0.8,
+    "laser_hunt_r": 320.0, "open_scan_s": 3.0,
+    "drops": True, "drop_r": 200.0, "heal_to": 0.6,
 }
 
 UPGRADE_PRIORITY = ["plating", "laser_damage", "laser_charge", "armor", "gun_rate", "gun_damage", "nanites",
@@ -279,6 +280,8 @@ class Bot:
         self.enemy_seen_t = -99.0
         self.ignore_crates = {}
         self.ok = True
+        self.known_pk = {}   # pickup id -> [kind, x, y, z, last_seen_t]
+        self.scan_start = None
 
     # ------------------------------------------------------------------ helpers
     def zone_goal(self, obs):
@@ -536,11 +539,21 @@ class Bot:
             elif dd < P["loot_r"] and w.walkable(p["pos"][0], p["pos"][1]) and abs(p["pos"][2] - w.ground(p["pos"][0], p["pos"][1])) < 2.0:
                 if loot_goal is None or dd < loot_goal[2]:
                     loot_goal = (p["pos"][0], p["pos"][1], dd, "weapon")
+        seen_ids = set()
+        for p in obs.get("pickups", []):
+            self.known_pk[p["id"]] = [p["kind"], p["pos"][0], p["pos"][1], p["pos"][2], t]
+            seen_ids.add(p["id"])
+        for pid in list(self.known_pk):
+            k = self.known_pk[pid]
+            # we see everything within ~40 m: if it is not listed, someone took it
+            if pid not in seen_ids and (d2((k[1], k[2]), pos) < 38.0 or t - k[4] > 90.0):
+                del self.known_pk[pid]
         laser_goal = None
         if "laser" not in slots:
-            for p in obs.get("pickups", []):
-                if p["kind"] != "laser":
+            for pid, k in self.known_pk.items():
+                if k[0] != "laser":
                     continue
+                p = {"pos": [k[1], k[2], k[3]]}
                 dd = d2(p["pos"], pos)
                 if dd < P["laser_hunt_r"] and abs(p["pos"][2] - w.ground(p["pos"][0], p["pos"][1])) < 2.5 and w.walkable(p["pos"][0], p["pos"][1]):
                     if laser_goal is None or dd < laser_goal[2]:
@@ -625,6 +638,9 @@ class Bot:
         elif target is not None:
             label = f"fight {target['id']}"
             move = self.fight_vector(me, target, slots, weps, circle)
+            if P["aggressive"]:
+                charging = "laser" in slots and (weps[slots["laser"]].get("charge", 0) or 0) > 0
+                boost = me["energy"] > 45 and not charging and (int(t * 2.0) % 3 == 0)
             if P["reload_cover"] and target["_d"] < 180:
                 gi_ = slots.get("gun")
                 reloading = gi_ is not None and weps[gi_].get("reload", 0) > 0.4
@@ -858,6 +874,11 @@ class Bot:
             want = P["want_laser"]
         else:
             want = P["want_gun"]
+        if P["aggressive"]:
+            thp = tgt.get("hp", 1400) / max(tgt.get("max_hp", 1400), 1)
+            myhp = me["hp"] / max(me["max_hp"], 1)
+            if thp < 0.45 or thp < myhp - 0.25:
+                want = min(want, 45.0)  # press the kill
         their = tgt.get("weapons", [])
         if "lightning" in their and "lightning" not in slots:
             want = max(want, 60.0)
@@ -959,6 +980,10 @@ class Bot:
         return best
 
     def idle_aim(self, obs, me, enemies, t, move):
+        if not enemies and t < P["open_scan_s"]:
+            if self.scan_start is None:
+                self.scan_start = (t, me["aim"][0])
+            return [wrap(self.scan_start[1] + (t - self.scan_start[0] + 0.3) * 2.6), 0.0]
         if enemies:
             e = enemies[0]
             return [math.atan2(e["pos"][1] - me["pos"][1], e["pos"][0] - me["pos"][0]), 0.0]
