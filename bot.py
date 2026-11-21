@@ -260,7 +260,7 @@ P = {
     "ghost_max_age": 12.0,      # v13-C sets 5.5 (only stalk while the estimate is trustworthy)
     "roof_safe": False,         # v13-C: opportunistic rooftop with safe exits (retreat/convergence always win)
     "standoff": True,           # v13-A: laser (hitscan) vs gun-only bots at ~180 m, where their bullets need 0.7 s
-    "standoff_r": 180.0,
+    "standoff_r": 145.0,
     "laser_min_r": 0.0,         # v17 (lab flag; 75 to enable): keep at least this far from laser carriers (0 = off)
     "laser_min_finish": 0.15,   # ...unless the carrier is below this HP fraction (finish it)
     "laser_cd_window": 1.3,     # ...or it fired its laser within this many seconds (cooldown 1.65 s)
@@ -274,10 +274,10 @@ P = {
     "edge_hide": False,          # hide with back to a wall near the zone edge        # peek for a firing line, pre-charge laser, hunt toward sounds         # constant motion + boost jinks, chase wounded, retreat late
     "cube_r": 110.0, "crate_r": 110.0, "npc_r": 160.0, "npc_stand": 62.0,
     "laser_hunt_r": 320.0, "open_scan_s": 3.0,
-    "drops": True, "drop_r": 200.0, "heal_to": 0.6,
+    "drops": True, "drop_r": 120.0, "heal_to": 0.6,
     "drop_heal": True,          # v15: supply drop = full heal + 3 cubes; go for it mid-fight, keep moving while capturing
 }
-P.update({"press_hp": 0.45, "press_gap": 0.25, "press_r": 45.0, "forget_dead": False, "farm_hp_gate": False, "drone_avoid": False, "drone_avoid_hp": 0.8,
+P.update({"press_hp": 0.35, "press_gap": 0.25, "press_r": 45.0, "forget_dead": False, "farm_hp_gate": False, "drone_avoid": False, "drone_avoid_hp": 0.8,
           "press_multi_block": False, "fight_boost": True, "retreat_hidden_w": 60.0, "gang_fire": True})
 # v22 INFORMED BERSERK: keep the caution that real scores proved (survival switch @2, pack skip,
 # break LOS @3 watchers); drop untested caution that keeps us out of fights; add lab bug fixes.
