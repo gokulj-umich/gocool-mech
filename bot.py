@@ -235,7 +235,8 @@ P = {
     "reload_cover": False,      # step out of sight while the gun reloads
     "hide_shuffle": False,      # never stand perfectly still while hiding
     "pacifist": False,          # diagnostic: never fight, only hide/evade
-    "aggressive": True,         # constant motion + boost jinks, chase wounded, retreat late
+    "aggressive": True,
+    "hunt_hidden": True,        # peek for a firing line, pre-charge laser, hunt toward sounds         # constant motion + boost jinks, chase wounded, retreat late
     "cube_r": 110.0, "crate_r": 110.0, "npc_r": 160.0, "npc_stand": 62.0,
     "laser_hunt_r": 320.0, "open_scan_s": 3.0,
     "drops": True, "drop_r": 200.0, "heal_to": 0.6,
@@ -282,6 +283,8 @@ class Bot:
         self.ok = True
         self.known_pk = {}   # pickup id -> [kind, x, y, z, last_seen_t]
         self.scan_start = None
+        self.peek = None          # (x, y, target_id, until_t)
+        self.heard = None         # (bearing, dist_m, t)
 
     # ------------------------------------------------------------------ helpers
     def zone_goal(self, obs):
@@ -476,6 +479,11 @@ class Bot:
             elif et == "take_failed":
                 pass
 
+        for snd in obs.get("sounds", []):
+            if snd["kind"] in ("gun", "laser", "laser_charge", "lightning", "step", "boost", "reload", "jet", "mortar") and snd["dist"] in ("near", "mid"):
+                dm = 35.0 if snd["dist"] == "near" else 105.0
+                if self.heard is None or dm <= self.heard[1] or t - self.heard[2] > 2.0:
+                    self.heard = (snd["bearing"], dm, t)
         enemies = [m for m in obs["mechs"] if m["kind"] == "mech" and m["id"] != me["id"]]
         npcs = [m for m in obs["mechs"] if m["kind"] == "npc"]
         for e in enemies:
@@ -638,6 +646,11 @@ class Bot:
         elif target is not None:
             label = f"fight {target['id']}"
             move = self.fight_vector(me, target, slots, weps, circle)
+            if P["hunt_hidden"] and not target.get("_los", True):
+                pk = self.peek_point(me, target, muzzle, t)
+                if pk is not None:
+                    label += " peek"
+                    move = self.go_to(me, self.local_plan, pk, t)
             if P["aggressive"]:
                 charging = "laser" in slots and (weps[slots["laser"]].get("charge", 0) or 0) > 0
                 boost = me["energy"] > 45 and not charging and (int(t * 2.0) % 3 == 0)
@@ -649,6 +662,12 @@ class Bot:
                 if reloading and not other_ready:
                     label += " reload-cover"
                     move = self.retreat_vector(me, threats or [target], circle)
+        elif (P["hunt_hidden"] and self.heard is not None and t - self.heard[2] < 3.0 and hp_frac > 0.5
+              and not heal_mode and zone_ok(x + math.cos(self.heard[0]) * self.heard[1], y + math.sin(self.heard[0]) * self.heard[1])):
+            b, dm, _ = self.heard
+            label = "hunt-sound"
+            gx, gy = x + math.cos(b) * dm, y + math.sin(b) * dm
+            move = self.go_to(me, self.local_plan, (gx, gy), t)
         elif cube_goal is not None and (near_enemy > 60 or hp_frac > 0.5):
             label = "cube"
             move = self.go_to(me, self.local_plan, (cube_goal[0], cube_goal[1]), t)
@@ -828,6 +847,10 @@ class Bot:
                     fire[la] = False
                 else:
                     fire[la] = True  # keep the charge while we wait for a line
+            elif (P["hunt_hidden"] and not vis and d < 160 and lw.get("cooldown", 0) <= 0.15
+                  and t >= self.shorted_until and charge < full):
+                fire[la] = True  # pre-charge so we fire the moment it steps out
+                aim = [ly, lp]
         # mortar
         mo = slots.get("mortar")
         if mo is not None and not npc:
@@ -893,6 +916,35 @@ class Bot:
             mvx += ax / n * 0.8
             mvy += ay / n * 0.8
         return [mvx, mvy]
+
+    def peek_point(self, me, tgt, muzzle, t):
+        """Nearest walkable spot from which our muzzle has a line to a hidden (remembered) target."""
+        if self.peek is not None and self.peek[2] == tgt["id"] and t < self.peek[3]:
+            return (self.peek[0], self.peek[1])
+        x, y, z = me["pos"]
+        w = self.w
+        mh = me["stats"].get("muzzle_height", 7.0)
+        tp = (tgt["pos"][0], tgt["pos"][1], tgt["pos"][2] + 4.5)
+        best = None
+        base = math.atan2(tgt["pos"][1] - y, tgt["pos"][0] - x)
+        for ring in (8.0, 16.0, 26.0, 38.0):
+            for k in range(12):
+                a = base + (k - 6) * (TAU / 12)
+                px, py = x + math.cos(a) * ring, y + math.sin(a) * ring
+                if not w.walkable(px, py):
+                    continue
+                pz = w.ground(px, py) + mh
+                if w.los((px, py, pz), tp, step=2.0):
+                    sc = ring + abs(wrap(a - base)) * 4.0
+                    if best is None or sc < best[0]:
+                        best = (sc, px, py)
+            if best is not None:
+                break
+        if best is None:
+            self.peek = None
+            return None
+        self.peek = (best[1], best[2], tgt["id"], t + 1.0)
+        return (best[1], best[2])
 
     def retreat_vector(self, me, threats, circle):
         x, y, z = me["pos"]
