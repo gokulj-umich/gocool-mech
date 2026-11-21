@@ -259,6 +259,9 @@ P = {
     "roof_safe": False,         # v13-C: opportunistic rooftop with safe exits (retreat/convergence always win)
     "standoff": True,           # v13-A: laser (hitscan) vs gun-only bots at ~180 m, where their bullets need 0.7 s
     "standoff_r": 180.0,
+    "laser_min_r": 75.0,        # v17: keep at least this far from laser carriers (0 = off)
+    "laser_min_finish": 0.15,   # ...unless the carrier is below this HP fraction (finish it)
+    "laser_cd_window": 1.3,     # ...or it fired its laser within this many seconds (cooldown 1.65 s)
     "powerup_until": 100.0,     # opening: cubes first (crates, drones), only fight bots that are close or shooting us
     "powerup_r": 150.0,         # final-burn prep: only close / finishing / forced fights after this           # roam to find house bots early and prefer ones facing away (rear hits x1.5)
     "roam_until": 300.0, "roam_hp": 0.6,
@@ -317,6 +320,8 @@ class Bot:
         self.peek = None          # (x, y, target_id, until_t)
         self.heard = None         # (bearing, dist_m, t)
         self.tracks = {}          # enemy id -> dict(pos, vel, t, hp, max_hp, weapons)
+        self.laser_fired = {}     # v17: enemy id -> time we last saw its laser fire (beam or charge ending)
+        self.was_charging = {}
         self.pp = None            # power position: dict(roof, state, t0, climb)
         self.my_kills = 0
         self.hit_ids = set()      # mechs we have already damaged (no longer unaware)
@@ -553,6 +558,15 @@ class Bot:
         cur_ids = {e["id"] for e in enemies}
         for e in enemies:
             self.seen_at[e["id"]] = t
+        # v17: track enemy laser cooldowns (beam seen, or a charge we watched ended)
+        for bm in obs.get("beams", []) or []:
+            if bm.get("kind") == "laser" and bm.get("by") is not None:
+                self.laser_fired[bm["by"]] = t - (bm.get("age", 0) or 0)
+        for e in enemies:
+            ch = bool(e.get("charging"))
+            if self.was_charging.get(e["id"]) and not ch:
+                self.laser_fired[e["id"]] = max(self.laser_fired.get(e["id"], -99.0), t - 0.1)
+            self.was_charging[e["id"]] = ch
         heat = sum(1 for v in self.seen_at.values() if t - v < 20.0)
         if P["commit"]:
             hpf_now = me["hp"] / max(me["max_hp"], 1.0)
@@ -1100,6 +1114,13 @@ class Bot:
         their = tgt.get("weapons", [])
         if "lightning" in their and "lightning" not in slots:
             want = max(want, 60.0)
+        if P["laser_min_r"] and "laser" in their and tgt.get("kind") == "mech":
+            # v17: house-bot lasers hit 48% inside 60 m vs 18% at 60-120 m (replays). Stay out of that band while
+            # their laser is ready/charging; close in (press, lightning) only while it is on cooldown.
+            thp_ = tgt.get("hp", 1400) / max(tgt.get("max_hp", 1400), 1)
+            on_cd = (self.t - self.laser_fired.get(tgt.get("id"), -99.0)) < P["laser_cd_window"]
+            if thp_ > P["laser_min_finish"] and (tgt.get("charging") or not on_cd):
+                want = max(want, P["laser_min_r"])
         if (P["standoff"] and "laser" in slots and "laser" not in their and tgt.get("kind") == "mech"
                 and self.t >= self.shorted_until):
             thp = tgt.get("hp", 1400) / max(tgt.get("max_hp", 1400), 1)
