@@ -281,7 +281,7 @@ P.update({"press_hp": 0.45, "press_gap": 0.25, "press_r": 45.0, "forget_dead": F
           "press_multi_block": False, "fight_boost": True, "retreat_hidden_w": 60.0, "gang_fire": True})
 # v22 INFORMED BERSERK: keep the caution that real scores proved (survival switch @2, pack skip,
 # break LOS @3 watchers); drop untested caution that keeps us out of fights; add lab bug fixes.
-P.update({"recover_hp": 0.0, "endgame_t": 9999.0, "retreat_hp_multi": 0.25,
+P.update({"recover_hp": 0.0, "endgame_t": 9999.0, "retreat_hp_multi": 0.25, "gang_escape": True,
           "drone_avoid": True, "forget_dead": True, "farm_hp_gate": True})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
