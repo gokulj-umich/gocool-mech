@@ -250,6 +250,8 @@ P = {
     "mode_detect": True,        # deaths we did not cause early -> real free-for-all -> survival mode
     "backstab_laser_first": True,
     "smart_targets": True,      # prefer wounded / facing-away / exposed / laser-charging targets, avoid escorted ones
+    "gang_escape": True,        # v19: hit by >= gang_n different mechs within gang_window s -> retreat gang_hold s
+    "gang_n": 2, "gang_window": 3.0, "gang_hold": 4.0,
     "converge_n": 3,            # this many enemies with eyes on us -> break line of sight first
     "recover_hp": 0.6,          # after a retreat, only re-engage above this HP (or for an easy finish)
     "endgame_t": 330.0,
@@ -303,6 +305,8 @@ class Bot:
         self.threat_bearing = None
         self.threat_t = -99.0
         self.last_damage_t = -99.0
+        self.hits_by = []         # v19: (t, attacker id) for recent damage
+        self.gang_until = -99.0
         self.scan_phase = random.random() * TAU
         self.hide_goal = None
         self.hide_key = None
@@ -516,6 +520,8 @@ class Bot:
             if et == "damaged":
                 if ev.get("weapon") != "zone":
                     self.last_damage_t = t
+                    if ev.get("by") is not None and ev["by"] < 100:   # mechs only, not drones
+                        self.hits_by.append((t, ev["by"]))
                     if ev.get("bearing") is not None:
                         self.threat_bearing = ev["bearing"]
                         self.threat_t = t
@@ -743,6 +749,14 @@ class Bot:
             if e["_d"] < 150 and abs(wrap(e["aim"][0] - b_e2me)) < 0.35:
                 eyes_on_us += 1
         converging = P["smart_targets"] and eyes_on_us >= P["converge_n"]
+        # v19: replays show mechs hit by 2+ different attackers survive far more often when they
+        # back off at once (66-89% vs 50-67% holding, 33-62% pushing in). Break off for a few seconds.
+        if P["gang_escape"]:
+            self.hits_by = [(ht, hb) for ht, hb in self.hits_by if t - ht < P["gang_window"]]
+            if len({hb for _, hb in self.hits_by}) >= P["gang_n"]:
+                self.gang_until = t + P["gang_hold"]
+            if t < self.gang_until and threats:
+                converging = True
         losing = converging or (P["pacifist"] and bool(threats)) or (P["stealth"] and bool(threats) and target is None) or threats and (hp_frac < P["retreat_hp"] or (hp_frac < P["retreat_hp_multi"] and (n_threats >= 2 or strongest > my_hp * 1.3)))
         near_enemy = min((e["_d"] for e in enemies), default=999.0)
         heal_mode = hp_frac < (0.85 if self.survival else P["heal_to"]) and not threats and (t - self.last_damage_t) > 0.5
