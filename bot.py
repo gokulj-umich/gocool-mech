@@ -1006,7 +1006,8 @@ class Bot:
             charge = lw.get("charge", 0) or 0
             full = lw["stats"].get("charge", 0.75)
             hold = lw["stats"].get("hold_s", 2.0)
-            ly, lp, lhd, _ = self.lead(me, tgt, 1e9)
+            _lt = dict(tgt); _lt["pos"] = [tgt["pos"][0] + tgt["vel"][0] * 0.12, tgt["pos"][1] + tgt["vel"][1] * 0.12, tgt["pos"][2]]
+            ly, lp, lhd, _ = self.lead(me, _lt, 1e9)
             if d < rng * 0.97 and vis and t >= self.shorted_until and (li is None or d > 30):
                 if lw.get("cooldown", 0) <= 0.15:
                     if charge < full - 0.12:
