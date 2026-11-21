@@ -291,10 +291,10 @@ try:   # lab only: variant overrides from the environment (never set in the matc
 except Exception:
     pass
 
-UPGRADE_PRIORITY = ["plating", "laser_damage", "laser_charge", "armor", "gun_rate", "gun_damage", "nanites",
-                    "lightning_efficiency", "servos", "lightning_range", "sensors", "gun_mag",
-                    "gun_velocity", "gyros", "lightning_chain", "reactor", "capacitor", "jets",
-                    "mortar_reload", "mortar_velocity", "mortar_splash", "laser_pierce"]
+UPGRADE_PRIORITY = ["plating", "gun_mag", "gun_damage", "laser_damage", "nanites", "armor", "laser_charge", "gun_rate",
+                    "lightning_efficiency", "servos", "gun_velocity", "sensors", "lightning_range", "gyros",
+                    "lightning_chain", "reactor", "capacitor", "jets", "mortar_reload", "mortar_velocity",
+                    "mortar_splash", "laser_pierce"]  # v27: gun is our main damage (always held); mag = +31% sustained DPS
 WEAPON_RANK = {"lightning": 3.0, "laser": 2.6, "mortar": 1.0, "gun": 0.0}
 if P["laser_first"]:
     WEAPON_RANK["laser"] = 4.0
