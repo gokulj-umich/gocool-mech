@@ -261,7 +261,9 @@ P = {
     "standoff_r": 180.0,
     "laser_min_r": 75.0,        # v17: keep at least this far from laser carriers (0 = off)
     "laser_min_finish": 0.15,   # ...unless the carrier is below this HP fraction (finish it)
-    "laser_cd_window": 1.3,     # ...or it fired its laser within this many seconds (cooldown 1.65 s)
+    "laser_cd_window": 1.3,
+    "laser_backoff": True,      # v18: vs a laser charging at us, back away (<70 m) instead of side-stepping
+    "laser_backoff_r": 70.0,     # ...or it fired its laser within this many seconds (cooldown 1.65 s)
     "powerup_until": 100.0,     # opening: cubes first (crates, drones), only fight bots that are close or shooting us
     "powerup_r": 150.0,         # final-burn prep: only close / finishing / forced fights after this           # roam to find house bots early and prefer ones facing away (rear hits x1.5)
     "roam_until": 300.0, "roam_hp": 0.6,
@@ -1380,6 +1382,13 @@ class Bot:
             if e.get("charging") and e["_d"] < 290:
                 b = math.atan2(y - e["pos"][1], x - e["pos"][0])
                 if abs(wrap(e["aim"][0] - b)) < math.atan2(6.0, max(e["_d"], 1)) + 0.03:
+                    if P["laser_backoff"]:
+                        # v18: replays show sidesteps don't change laser hit rate, distance does
+                        # (48% <60 m, 18% at 60-120 m). Back straight out of the close band instead;
+                        # farther out, don't spend energy dodging lasers at all.
+                        if e["_d"] < P["laser_backoff_r"]:
+                            best = (math.cos(b), math.sin(b))
+                        continue
                     px, py = -math.sin(b), math.cos(b)
                     s = 1 if (int(self.t * 1.3) % 2 == 0) else -1
                     best = (px * s, py * s)
