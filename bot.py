@@ -227,10 +227,13 @@ P = {
     "passive": False,       # if True: only fight when close (< close_r) or recently shot at
     "close_r": 100.0,
     "strafe_min": 0.35, "strafe_max": 0.9,
-    "want_gun": 70.0, "want_laser": 150.0, "want_lightning": 28.0,
+    "want_gun": 70.0, "want_laser": 150.0, "want_lightning": 24.0,
     "retreat_hp": 0.35, "retreat_hp_multi": 0.55,
     "loot_r": 90.0, "npc_hp": 0.65, "crates": True,
     "laser_first": True,
+    "lightning_top": True,     # rank lightning above laser
+    "reload_cover": True,      # step out of sight while the gun reloads
+    "hide_shuffle": True,      # never stand perfectly still while hiding
     "cube_r": 110.0, "crate_r": 110.0, "npc_r": 160.0, "npc_stand": 62.0,
     "drops": True, "drop_r": 170.0, "heal_to": 0.8,
 }
@@ -242,6 +245,8 @@ UPGRADE_PRIORITY = ["plating", "armor", "nanites", "gun_rate", "gun_damage", "li
 WEAPON_RANK = {"lightning": 3.0, "laser": 2.6, "mortar": 1.0, "gun": 0.0}
 if P["laser_first"]:
     WEAPON_RANK["laser"] = 3.2
+if P.get("lightning_top"):
+    WEAPON_RANK["lightning"] = 3.5
 
 
 class Bot:
@@ -602,6 +607,14 @@ class Bot:
         elif target is not None:
             label = f"fight {target['id']}"
             move = self.fight_vector(me, target, slots, weps, circle)
+            if P["reload_cover"] and target["_d"] < 180:
+                gi_ = slots.get("gun")
+                reloading = gi_ is not None and weps[gi_].get("reload", 0) > 0.4
+                other_ready = ("lightning" in slots and target["_d"] < 44 and me["energy"] > 10) or (
+                    "laser" in slots and weps[slots["laser"]].get("cooldown", 0) < 0.3)
+                if reloading and not other_ready:
+                    label += " reload-cover"
+                    move = self.retreat_vector(me, threats or [target], circle)
         elif cube_goal is not None and (near_enemy > 60 or hp_frac > 0.5):
             label = "cube"
             move = self.go_to(me, self.local_plan, (cube_goal[0], cube_goal[1]), t)
@@ -659,6 +672,9 @@ class Bot:
             else:
                 label = "hide"
                 move = [0.0, 0.0]
+                if P["hide_shuffle"]:
+                    ph = t * 0.9 + self.scan_phase
+                    move = [0.4 * math.cos(ph), 0.4 * math.sin(ph)]
 
         # ---- dodging (adds a lateral component)
         dodge = self.dodge_vector(obs, me, enemies)
