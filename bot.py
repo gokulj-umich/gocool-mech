@@ -257,6 +257,7 @@ P = {
     "heat_max": 3,
     "ghost_max_age": 12.0,      # v13-C sets 5.5 (only stalk while the estimate is trustworthy)
     "roof_safe": False,         # v13-C: opportunistic rooftop with safe exits (retreat/convergence always win)
+    "late_stealth_t": 240.0,
     "standoff": True,           # v13-A: laser (hitscan) vs gun-only bots at ~180 m, where their bullets need 0.7 s
     "standoff_r": 180.0,
     "powerup_until": 100.0,     # opening: cubes first (crates, drones), only fight bots that are close or shooting us
@@ -527,6 +528,8 @@ class Bot:
             elif et == "take_failed":
                 pass
 
+        if t >= P["late_stealth_t"] and not P["stealth"]:
+            P.update(stealth=True, assassin=False, ghost_hunt=False, hunt_hidden=False, crates=False)
         if P["mode_detect"] and not self.ffa:
             others_dead = (16 - obs.get("alive", 16)) - self.my_kills
             if others_dead >= 2 and t < 150.0:
