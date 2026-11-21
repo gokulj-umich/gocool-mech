@@ -270,6 +270,7 @@ P = {
     "cube_r": 110.0, "crate_r": 110.0, "npc_r": 160.0, "npc_stand": 62.0,
     "laser_hunt_r": 320.0, "open_scan_s": 3.0,
     "drops": True, "drop_r": 200.0, "heal_to": 0.6,
+    "drop_heal": True,          # v15: supply drop = full heal + 3 cubes; go for it mid-fight, keep moving while capturing
 }
 
 UPGRADE_PRIORITY = ["plating", "laser_damage", "laser_charge", "armor", "gun_rate", "gun_damage", "nanites",
@@ -726,7 +727,7 @@ class Bot:
                 if hold is not None and hold != me["id"]:
                     continue
                 if dd < P["drop_r"] and zone_ok(dp[0], dp[1]) and dr["lands_in"] < dd / 10.0 + 6.0:
-                    if not any(d2(e["pos"], dp) < 70 for e in enemies):
+                    if not any(d2(e["pos"], dp) < (45 if P["drop_heal"] else 70) for e in enemies):
                         if drop_goal is None or dd < drop_goal[2]:
                             drop_goal = (dp[0], dp[1], dd, dr.get("radius", 8.0))
 
@@ -782,6 +783,17 @@ class Bot:
             label = "get-laser"
             move = self.go_to(me, self.local_plan, (laser_goal[0], laser_goal[1]), t)
             boost = laser_goal[2] > 20 and me["energy"] > 30
+        elif (P["drop_heal"] and drop_goal is not None and (t - self.last_damage_t) > 1.5
+              and (hp_frac < 0.85 or me.get("cubes", 0) < 10)):
+            dd = drop_goal[2]
+            if dd > 5.0:
+                label = "drop-heal"
+                move = self.go_to(me, self.local_plan, (drop_goal[0], drop_goal[1]), t)
+                boost = dd > 15 and me["energy"] > 30
+            else:
+                label = "capture-move"   # stay inside the ring but never stand still
+                a = math.atan2(y - drop_goal[1], x - drop_goal[0]) + math.pi / 2
+                move = [0.5 * math.cos(a), 0.5 * math.sin(a)]
         elif target is not None:
             label = f"fight {target['id']}"
             move = self.fight_vector(me, target, slots, weps, circle)
