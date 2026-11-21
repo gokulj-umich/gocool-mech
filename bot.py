@@ -259,6 +259,7 @@ P = {
     "roof_safe": False,         # v13-C: opportunistic rooftop with safe exits (retreat/convergence always win)
     "standoff": True,           # v13-A: laser (hitscan) vs gun-only bots at ~180 m, where their bullets need 0.7 s
     "standoff_r": 180.0,
+    "standoff_adapt": True,     # v13-A2: standoff = our vision range - 15 m (Sensor suite pushes it past gun range 230 m)
     "powerup_until": 100.0,     # opening: cubes first (crates, drones), only fight bots that are close or shooting us
     "powerup_r": 150.0,         # final-burn prep: only close / finishing / forced fights after this           # roam to find house bots early and prefer ones facing away (rear hits x1.5)
     "roam_until": 300.0, "roam_hp": 0.6,
@@ -272,8 +273,8 @@ P = {
     "drops": True, "drop_r": 200.0, "heal_to": 0.6,
 }
 
-UPGRADE_PRIORITY = ["plating", "laser_damage", "laser_charge", "armor", "gun_rate", "gun_damage", "nanites",
-                    "lightning_efficiency", "servos", "lightning_range", "sensors", "gun_mag",
+UPGRADE_PRIORITY = ["plating", "sensors", "laser_damage", "laser_charge", "armor", "gun_rate", "gun_damage", "nanites",
+                    "lightning_efficiency", "servos", "lightning_range", "gun_mag",
                     "gun_velocity", "gyros", "lightning_chain", "reactor", "capacitor", "jets",
                     "mortar_reload", "mortar_velocity", "mortar_splash", "laser_pierce"]
 WEAPON_RANK = {"lightning": 3.0, "laser": 2.6, "mortar": 1.0, "gun": 0.0}
@@ -803,6 +804,8 @@ class Bot:
             if P["aggressive"]:
                 charging = "laser" in slots and (weps[slots["laser"]].get("charge", 0) or 0) > 0
                 boost = me["energy"] > 45 and not charging and (int(t * 2.0) % 3 == 0)
+            if getattr(self, "_kite_boost", False):
+                boost = True  # reopen the standoff distance
             if P["reload_cover"] and target["_d"] < 180:
                 gi_ = slots.get("gun")
                 reloading = gi_ is not None and weps[gi_].get("reload", 0) > 0.4
@@ -1063,6 +1066,7 @@ class Bot:
         return aim, fire
 
     def fight_vector(self, me, tgt, slots, weps, circle, want=None):
+        self._kite_boost = False
         x, y = me["pos"][0], me["pos"][1]
         tx, ty = tgt["pos"][0], tgt["pos"][1]
         d = d2((x, y), (tx, ty))
@@ -1091,7 +1095,13 @@ class Bot:
         if (P["standoff"] and "laser" in slots and "laser" not in their and tgt.get("kind") == "mech"
                 and self.t >= self.shorted_until):
             thp = tgt.get("hp", 1400) / max(tgt.get("max_hp", 1400), 1)
-            want = P["standoff_r"] if thp > 0.2 else 120.0
+            so = P["standoff_r"]
+            if P["standoff_adapt"]:
+                vis_r = 200.0 + me["stats"].get("vision_bonus", 0.0)
+                so = min(270.0, vis_r - 15.0)
+            want = so if thp > 0.2 else 120.0
+            charging_l = (weps[slots["laser"]].get("charge", 0) or 0) > 0
+            self._kite_boost = d < want - 40.0 and me["energy"] > 40 and not charging_l
         radial = max(-1.0, min(1.0, (d - want) / 30.0))
         mvx = px * self.strafe_dir * 0.9 + rx * radial * 0.7
         mvy = py * self.strafe_dir * 0.9 + ry * radial * 0.7
