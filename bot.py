@@ -254,7 +254,7 @@ P = {
     "recover_hp": 0.6,          # after a retreat, only re-engage above this HP (or for an easy finish)
     "endgame_t": 330.0,
     "commit": True,            # v13-B: stick to one target until dead, prefer isolated ones, burst->survival on heat
-    "heat_max": 3,
+    "heat_max": 2,
     "ghost_max_age": 12.0,      # v13-C sets 5.5 (only stalk while the estimate is trustworthy)
     "roof_safe": False,         # v13-C: opportunistic rooftop with safe exits (retreat/convergence always win)
     "standoff": True,           # v13-A: laser (hitscan) vs gun-only bots at ~180 m, where their bullets need 0.7 s
