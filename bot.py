@@ -244,8 +244,8 @@ P = {
     "pacifist": False,          # diagnostic: never fight, only hide/evade
     "stealth": False,            # survive to the final burn: stay unseen, silent, fight only when cornered
     "stealth_fight_r": 50.0,
-    "power_pos": False,          # midgame: hold a rooftop inside the next zone, shoot from its edge
-    "pp_start": 150.0, "pp_end": 330.0, "pp_climb_s": 7.0,
+    "power_pos": True,          # midgame: hold a rooftop inside the next zone, shoot from its edge
+    "pp_start": 100.0, "pp_end": 330.0, "pp_climb_s": 7.0,
     "assassin": True,
     "mode_detect": True,        # deaths we did not cause early -> real free-for-all -> survival mode
     "backstab_laser_first": True,
@@ -255,8 +255,8 @@ P = {
     "endgame_t": 330.0,
     "commit": False,            # v13-B: stick to one target until dead, prefer isolated ones, burst->survival on heat
     "heat_max": 3,
-    "ghost_max_age": 12.0,      # v13-C sets 5.5 (only stalk while the estimate is trustworthy)
-    "roof_safe": False,         # v13-C: opportunistic rooftop with safe exits (retreat/convergence always win)
+    "ghost_max_age": 5.5,      # v13-C sets 5.5 (only stalk while the estimate is trustworthy)
+    "roof_safe": True,         # v13-C: opportunistic rooftop with safe exits (retreat/convergence always win)
     "standoff": True,           # v13-A: laser (hitscan) vs gun-only bots at ~180 m, where their bullets need 0.7 s
     "standoff_r": 180.0,
     "powerup_until": 100.0,     # opening: cubes first (crates, drones), only fight bots that are close or shooting us
