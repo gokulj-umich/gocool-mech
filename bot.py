@@ -528,7 +528,7 @@ class Bot:
             ch = offer["choices"]
             best, bi = 999, 0
             for i, c in enumerate(ch):
-                r = UPGRADE_PRIORITY.index(c["id"]) if c["id"] in UPGRADE_PRIORITY else 50
+                _up = P.get("up_prio") or UPGRADE_PRIORITY; r = _up.index(c["id"]) if c["id"] in _up else 50
                 if r < best:
                     best, bi = r, i
             act["pick"] = bi
