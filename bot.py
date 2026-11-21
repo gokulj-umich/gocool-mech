@@ -253,11 +253,11 @@ P = {
     "converge_n": 3,            # this many enemies with eyes on us -> break line of sight first
     "recover_hp": 0.6,          # after a retreat, only re-engage above this HP (or for an easy finish)
     "endgame_t": 330.0,
-    "commit": False,            # v13-B: stick to one target until dead, prefer isolated ones, burst->survival on heat
+    "commit": True,            # v13-B: stick to one target until dead, prefer isolated ones, burst->survival on heat
     "heat_max": 3,
     "ghost_max_age": 12.0,      # v13-C sets 5.5 (only stalk while the estimate is trustworthy)
     "roof_safe": False,         # v13-C: opportunistic rooftop with safe exits (retreat/convergence always win)
-    "standoff": True,           # v13-A: laser (hitscan) vs gun-only bots at ~180 m, where their bullets need 0.7 s
+    "standoff": False,           # v13-A: laser (hitscan) vs gun-only bots at ~180 m, where their bullets need 0.7 s
     "standoff_r": 180.0,
     "powerup_until": 100.0,     # opening: cubes first (crates, drones), only fight bots that are close or shooting us
     "powerup_r": 150.0,         # final-burn prep: only close / finishing / forced fights after this           # roam to find house bots early and prefer ones facing away (rear hits x1.5)
