@@ -281,7 +281,7 @@ P.update({"press_hp": 0.45, "press_gap": 0.25, "press_r": 45.0, "forget_dead": F
           "press_multi_block": False, "fight_boost": True, "retreat_hidden_w": 60.0, "gang_fire": True})
 # v22 INFORMED BERSERK: keep the caution that real scores proved (survival switch @2, pack skip,
 # break LOS @3 watchers); drop untested caution that keeps us out of fights; add lab bug fixes.
-P.update({"laser_grab": True, "laser_grab_r": 90.0,
+P.update({"squad_mode": True, "laser_grab": True, "laser_grab_r": 90.0,
           "recover_hp": 0.0, "endgame_t": 9999.0, "retreat_hp_multi": 0.25,
           "drone_avoid": True, "forget_dead": True, "farm_hp_gate": True})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
@@ -594,6 +594,13 @@ class Bot:
                 self.laser_fired[e["id"]] = max(self.laser_fired.get(e["id"], -99.0), t - 0.1)
             self.was_charging[e["id"]] = ch
         heat = sum(1 for v in self.seen_at.values() if t - v < 20.0)
+        # v31: practice detection. In practice the 15 house bots are one squad and never kill each other,
+        # so nobody dies except to us. Anyone else dying early means a free-for-all.
+        if not hasattr(self, "start_alive"):
+            self.start_alive = obs.get("alive", 16); self.ffa = False
+        if t < 240 and self.start_alive - obs.get("alive", 16) - self.my_kills >= 2:
+            self.ffa = True
+        squad = P["squad_mode"] and not self.ffa and t > 20
         if P["commit"]:
             hpf_now = me["hp"] / max(me["max_hp"], 1.0)
             if not self.survival and (heat >= P["heat_max"] and hpf_now < 0.75):
@@ -668,6 +675,10 @@ class Bot:
                 sc += escorts_b * 30.0
                 if e["id"] == self.cur_tid:
                     sc -= 50.0 + (40.0 if thp < 0.6 else 0.0)   # finish what we started
+                    if squad:
+                        sc -= 100.0                       # v31 squad: never switch off a hunter mid-fight
+                if squad and thp < 0.5:
+                    sc -= 120.0 * (1.0 - thp)             # v31 squad: wounded hunters first
                 if self.survival and not easy:
                     continue
             if sc < best:
@@ -828,7 +839,7 @@ class Bot:
             label = "retreat"
             move = self.retreat_vector(me, threats, circle)
             boost = me["energy"] > 25
-        elif P["laser_grab"] and laser_goal is not None and laser_goal[2] < P["laser_grab_r"] and hp_frac > 0.3:
+        elif P["laser_grab"] and laser_goal is not None and laser_goal[2] < (P["laser_grab_r"] * 1.7 if squad else P["laser_grab_r"]) and hp_frac > 0.3:
             # v24: lasers mostly come from dead mechs (1272 drops vs 300 spawns in lab replays); we picked up
             # only 5 of 44 lasers dropped by our own kills, usually lying 40-65 m away. Go take it now;
             # aiming/firing at the current target continues while we move.
