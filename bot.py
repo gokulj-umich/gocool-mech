@@ -281,7 +281,8 @@ P.update({"press_hp": 0.45, "press_gap": 0.25, "press_r": 45.0, "forget_dead": F
           "press_multi_block": False, "fight_boost": True, "retreat_hidden_w": 60.0, "gang_fire": True})
 # v22 INFORMED BERSERK: keep the caution that real scores proved (survival switch @2, pack skip,
 # break LOS @3 watchers); drop untested caution that keeps us out of fights; add lab bug fixes.
-P.update({"laser_grab": True, "laser_grab_r": 90.0,
+P.update({"surv_exit_hp": 0.70,   # v28: leave survival / stop healing at 70% (was 85%)
+          "laser_grab": True, "laser_grab_r": 90.0,
           "recover_hp": 0.0, "endgame_t": 9999.0, "retreat_hp_multi": 0.25,
           "drone_avoid": True, "forget_dead": True, "farm_hp_gate": True})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
@@ -598,7 +599,7 @@ class Bot:
             hpf_now = me["hp"] / max(me["max_hp"], 1.0)
             if not self.survival and (heat >= P["heat_max"] and hpf_now < 0.75):
                 self.survival = True
-            elif self.survival and heat <= 1 and hpf_now > 0.85 and t < P["endgame_t"]:
+            elif self.survival and heat <= 1 and hpf_now > P["surv_exit_hp"] and t < P["endgame_t"]:
                 self.survival = False
         ghost = None
         for gid, tr in list(self.tracks.items()):
@@ -794,7 +795,7 @@ class Bot:
                 converging = True
         losing = converging or (P["pacifist"] and bool(threats)) or (P["stealth"] and bool(threats) and target is None) or threats and (hp_frac < P["retreat_hp"] or (hp_frac < P["retreat_hp_multi"] and (n_threats >= 2 or strongest > my_hp * 1.3)))
         near_enemy = min((e["_d"] for e in enemies), default=999.0)
-        heal_mode = hp_frac < (0.85 if self.survival else P["heal_to"]) and not threats and (t - self.last_damage_t) > 0.5
+        heal_mode = hp_frac < (P["surv_exit_hp"] if self.survival else P["heal_to"]) and not threats and (t - self.last_damage_t) > 0.5
         if losing:
             self.recovering = True
         elif self.recovering and hp_frac >= P["recover_hp"]:
