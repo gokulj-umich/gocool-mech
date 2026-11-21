@@ -253,6 +253,12 @@ P = {
     "converge_n": 3,            # this many enemies with eyes on us -> break line of sight first
     "recover_hp": 0.6,          # after a retreat, only re-engage above this HP (or for an easy finish)
     "endgame_t": 330.0,
+    "commit": False,            # v13-B: stick to one target until dead, prefer isolated ones, burst->survival on heat
+    "heat_max": 3,
+    "ghost_max_age": 12.0,      # v13-C sets 5.5 (only stalk while the estimate is trustworthy)
+    "roof_safe": False,         # v13-C: opportunistic rooftop with safe exits (retreat/convergence always win)
+    "standoff": True,           # v13-A: laser (hitscan) vs gun-only bots at ~180 m, where their bullets need 0.7 s
+    "standoff_r": 180.0,
     "powerup_until": 100.0,     # opening: cubes first (crates, drones), only fight bots that are close or shooting us
     "powerup_r": 150.0,         # final-burn prep: only close / finishing / forced fights after this           # roam to find house bots early and prefer ones facing away (rear hits x1.5)
     "roam_until": 300.0, "roam_hp": 0.6,
@@ -314,6 +320,10 @@ class Bot:
         self.my_kills = 0
         self.hit_ids = set()      # mechs we have already damaged (no longer unaware)
         self.recovering = False
+        self.cur_tid = None
+        self.seen_at = {}         # enemy id -> last time seen (for "heat": how many bots are on us)
+        self.survival = False
+        self.roof_since = None
         self.ffa = False          # True once we see deaths we did not cause (real free-for-all)
         self.roof_black = {}      # roof id -> blacklisted until t
         self.roof_peek = None
@@ -540,15 +550,24 @@ class Bot:
             self.tracks[e["id"]] = {"pos": list(e["pos"]), "vel": list(e["vel"]), "t": t, "hp": e.get("hp", 1400),
                                     "max_hp": e.get("max_hp", 1400), "weapons": e.get("weapons", []), "cubes": e.get("cubes", 0)}
         cur_ids = {e["id"] for e in enemies}
+        for e in enemies:
+            self.seen_at[e["id"]] = t
+        heat = sum(1 for v in self.seen_at.values() if t - v < 20.0)
+        if P["commit"]:
+            hpf_now = me["hp"] / max(me["max_hp"], 1.0)
+            if not self.survival and (heat >= P["heat_max"] and hpf_now < 0.75):
+                self.survival = True
+            elif self.survival and heat <= 1 and hpf_now > 0.85 and t < P["endgame_t"]:
+                self.survival = False
         ghost = None
         for gid, tr in list(self.tracks.items()):
             age = t - tr["t"]
-            if age > 12.0:
+            if age > P["ghost_max_age"]:
                 del self.tracks[gid]
                 continue
             if gid in cur_ids or age < 0.2:
                 continue
-            k = min(age, 3.0)
+            k = min(age, 3.0) if P["ghost_max_age"] > 6.0 else min(age, 1.5) * 0.7
             gp = [tr["pos"][0] + tr["vel"][0] * k, tr["pos"][1] + tr["vel"][1] * k, tr["pos"][2]]
             dd = d2(gp, pos)
             if dd < 220 and (ghost is None or dd < ghost["_d"]):
@@ -601,8 +620,19 @@ class Bot:
                 b_e2me = math.atan2(y - e["pos"][1], x - e["pos"][0])
                 if abs(wrap(e["aim"][0] - b_e2me)) > math.pi / 2:
                     sc -= 60.0  # it is facing away: our hits land on its back
+            if P["commit"]:
+                escorts_b = sum(1 for o in enemies if o is not e and d2(o["pos"], e["pos"]) < 60)
+                if escorts_b >= 2 and thp >= 0.3:
+                    continue                              # attacking a pack invites the squad
+                sc += escorts_b * 30.0
+                if e["id"] == self.cur_tid:
+                    sc -= 50.0 + (40.0 if thp < 0.6 else 0.0)   # finish what we started
+                if self.survival and not easy:
+                    continue
             if sc < best:
                 best, target = sc, e
+        self.cur_tid = target["id"] if target is not None else (
+            self.cur_tid if self.cur_tid in self.tracks and t - self.tracks[self.cur_tid]["t"] < 5.0 else None)
         # NPC/crate farming only when no mechs around
         farm = None
         calm = (t - self.enemy_seen_t > 4.0) and (t - self.last_damage_t > 3.0)
@@ -714,7 +744,7 @@ class Bot:
         converging = P["smart_targets"] and eyes_on_us >= P["converge_n"]
         losing = converging or (P["pacifist"] and bool(threats)) or (P["stealth"] and bool(threats) and target is None) or threats and (hp_frac < P["retreat_hp"] or (hp_frac < P["retreat_hp_multi"] and (n_threats >= 2 or strongest > my_hp * 1.3)))
         near_enemy = min((e["_d"] for e in enemies), default=999.0)
-        heal_mode = hp_frac < P["heal_to"] and not threats and (t - self.last_damage_t) > 0.5
+        heal_mode = hp_frac < (0.85 if self.survival else P["heal_to"]) and not threats and (t - self.last_damage_t) > 0.5
         if losing:
             self.recovering = True
         elif self.recovering and hp_frac >= P["recover_hp"]:
@@ -740,7 +770,7 @@ class Bot:
             label = "zone"
             move = self.go_to(me, self.zone_plan, zgoal, t)
             boost = (not me["in_zone"]) or (time_to_shrink < d2(zgoal, pos) / 11.0 + 3) or (t >= zone["shrink_start"])
-        elif pp_res is not None and pp_res["hold"]:
+        elif pp_res is not None and pp_res["hold"] and not losing:
             label = pp_res["label"]
             move, boost, jump = pp_res["move"], pp_res["boost"], pp_res["jump"]
             no_steer = True
@@ -784,13 +814,13 @@ class Bot:
         elif pp_res is not None:
             label = pp_res["label"]
             move, boost = pp_res["move"], pp_res["boost"]
-        elif (P["ghost_hunt"] and not P["stealth"] and t >= P["powerup_until"] and ghost is not None and hp_frac > 0.55 and not heal_mode
+        elif (P["ghost_hunt"] and not P["stealth"] and not self.survival and t >= P["powerup_until"] and ghost is not None and hp_frac > 0.55 and not heal_mode
               and zone_ok(ghost["pos"][0], ghost["pos"][1])):
             label = f"stalk {ghost['id']}"
             pk = self.peek_point(me, ghost, muzzle, t)
             move = self.go_to(me, self.local_plan, pk if pk is not None else (ghost["pos"][0], ghost["pos"][1]), t)
             farm_shoot = ("ghost", ghost)
-        elif (P["hunt_hidden"] and not P["stealth"] and t >= P["powerup_until"] and self.heard is not None and t - self.heard[2] < 3.0 and hp_frac > 0.5
+        elif (P["hunt_hidden"] and not P["stealth"] and not self.survival and t >= P["powerup_until"] and self.heard is not None and t - self.heard[2] < 3.0 and hp_frac > 0.5
               and not heal_mode and zone_ok(x + math.cos(self.heard[0]) * self.heard[1], y + math.sin(self.heard[0]) * self.heard[1])):
             b, dm, _ = self.heard
             label = "hunt-sound"
@@ -842,7 +872,7 @@ class Bot:
                 move = self.go_to(me, self.local_plan, (c["pos"][0], c["pos"][1]), t)
             if vis and dd < 120:
                 farm_shoot = ("crate", c)
-        elif P["assassin"] and t < P["roam_until"] and hp_frac > P["roam_hp"] and not heal_mode:
+        elif P["assassin"] and not self.survival and t < P["roam_until"] and hp_frac > P["roam_hp"] and not heal_mode:
             label = "roam"
             rp = self.roam_point(obs, circle, t)
             move = self.go_to(me, self.zone_plan, rp, t)
@@ -1058,6 +1088,10 @@ class Bot:
         their = tgt.get("weapons", [])
         if "lightning" in their and "lightning" not in slots:
             want = max(want, 60.0)
+        if (P["standoff"] and "laser" in slots and "laser" not in their and tgt.get("kind") == "mech"
+                and self.t >= self.shorted_until):
+            thp = tgt.get("hp", 1400) / max(tgt.get("max_hp", 1400), 1)
+            want = P["standoff_r"] if thp > 0.2 else 120.0
         radial = max(-1.0, min(1.0, (d - want) / 30.0))
         mvx = px * self.strafe_dir * 0.9 + rx * radial * 0.7
         mvy = py * self.strafe_dir * 0.9 + ry * radial * 0.7
@@ -1077,6 +1111,21 @@ class Bot:
             self.pp = None
             return None
         w = self.w
+        if P["roof_safe"]:
+            recent2 = sum(1 for v in self.seen_at.values() if t - v < 5.0)
+            last_seen = max(self.seen_at.values(), default=-99.0)
+            x_, y_, z_ = me["pos"]
+            on_any = w.roof_at(x_, y_) >= 0 and z_ > w.ground(x_, y_) + 6.0
+            if on_any and self.roof_since is None:
+                self.roof_since = t
+            if not on_any:
+                self.roof_since = None
+            if self.pp is not None and (recent2 >= 2 or (self.roof_since is not None and t - self.roof_since > 30.0)):
+                self.roof_black[self.pp["roof"]] = t + 60.0       # leave: squad converging or stayed too long
+                self.pp = None
+                return None
+            if self.pp is None and (hp_frac < 0.75 or t - last_seen < 8.0):
+                return None                                     # only climb when healthy and unwatched
         if len(w.roofs) == 0:
             return None
         x, y, z = me["pos"]
@@ -1096,7 +1145,12 @@ class Bot:
                 if math.hypot(rf[3] - cx, rf[4] - cy) > mr * 0.8:
                     continue
                 dd = math.hypot(rf[3] - x, rf[4] - y)
-                sc = dd + rf[2] * 0.5 - min(rf[5], 3000) * 0.004
+                if P["roof_safe"]:
+                    if dd > 140.0:
+                        continue
+                    sc = dd + abs(rf[2] - 18.0) * 3.0 - min(rf[5], 3000) * 0.01 + math.hypot(rf[3] - cx, rf[4] - cy) * 0.3
+                else:
+                    sc = dd + rf[2] * 0.5 - min(rf[5], 3000) * 0.004
                 if best is None or sc < best[0]:
                     best = (sc, k)
             if best is None:
