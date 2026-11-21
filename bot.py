@@ -277,7 +277,8 @@ P = {
     "drops": True, "drop_r": 200.0, "heal_to": 0.6,
     "drop_heal": True,          # v15: supply drop = full heal + 3 cubes; go for it mid-fight, keep moving while capturing
 }
-P.update({"press_multi_block": False, "fight_boost": True, "retreat_hidden_w": 60.0, "gang_fire": True})
+P.update({"forget_dead": False, "farm_hp_gate": False, "drone_avoid": False, "drone_avoid_hp": 0.8,
+          "press_multi_block": False, "fight_boost": True, "retreat_hidden_w": 60.0, "gang_fire": True})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
     import json as _json
@@ -542,6 +543,12 @@ class Bot:
                 self.hit_ids.add(ev["target"])
             elif et == "kill":
                 self.my_kills += 1
+                if P["forget_dead"]:
+                    kid = ev.get("target")          # v16: forget the corpse so we don't stalk/charge at it
+                    self.tracks.pop(kid, None)
+                    if self.cur_tid == kid:
+                        self.cur_tid = None
+                    self.peek = None
             elif et == "effect" and ev.get("effect") == "short":
                 self.shorted_until = t + 2.0
             elif et == "take_failed":
@@ -897,7 +904,7 @@ class Bot:
         elif calm and loot_goal is not None:
             label = "loot " + loot_goal[3]
             move = self.go_to(me, self.local_plan, (loot_goal[0], loot_goal[1]), t)
-        elif (calm or (t < P["powerup_until"] and target is None)) and npc_tgt is not None and not P["stealth"]:
+        elif (calm or (t < P["powerup_until"] and target is None)) and npc_tgt is not None and not P["stealth"] and (not P["farm_hp_gate"] or hp_frac >= 0.9 or t < P["powerup_until"]):
             n, dd = npc_tgt
             label = "npc"
             vis = w.los(muzzle, (n["pos"][0], n["pos"][1], n["pos"][2] + 1.75))
@@ -912,7 +919,7 @@ class Bot:
                 move = self.fight_vector(me, n, slots, weps, circle, want=stand)
             if vis:
                 farm_shoot = ("npc", n)
-        elif (calm or (t < P["powerup_until"] and target is None)) and crate_tgt is not None and P["crates"] and not P["stealth"]:
+        elif (calm or (t < P["powerup_until"] and target is None)) and crate_tgt is not None and P["crates"] and not P["stealth"] and (not P["farm_hp_gate"] or hp_frac >= 0.9 or t < P["powerup_until"]):
             c, dd = crate_tgt
             label = "crate"
             cz = c["pos"][2] + 1.2
@@ -948,6 +955,14 @@ class Bot:
                 boost = False
                 speed_scale = min(speed_scale, 0.4)
 
+        # ---- lab finding: hurt bots get worn down by drones (45 m guard radius). Keep out of it unless farming.
+        if P["drone_avoid"] and hp_frac < P["drone_avoid_hp"] and not label.startswith("npc") and not label.startswith("zone"):
+            for n in npcs:
+                dn = d2(n["pos"], pos)
+                if dn < 55.0:
+                    ax, ay = x - n["pos"][0], y - n["pos"][1]
+                    k = (55.0 - dn) / 55.0 * 1.5 / (dn or 1.0)
+                    move = [move[0] + ax * k, move[1] + ay * k]
         # ---- dodging (adds a lateral component)
         dodge = self.dodge_vector(obs, me, enemies)
         if dodge is not None:
