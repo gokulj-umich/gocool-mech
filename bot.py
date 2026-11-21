@@ -1074,7 +1074,7 @@ class Bot:
             if d < rng * 0.95 and vis:
                 yaw = math.atan2(tgt["pos"][1] - me["pos"][1], tgt["pos"][0] - me["pos"][0])
                 aim = [yaw, 0.0]
-                if abs(wrap(me["aim"][0] - yaw)) < math.radians(lw["stats"].get("cone_deg", 30) * 0.4) and lw.get("cooldown", 0) <= 0.05 and me["energy"] >= lw["stats"].get("energy", 3):
+                if abs(wrap(me["aim"][0] - yaw)) < math.radians(lw["stats"].get("cone_deg", 30) * 0.4) and lw.get("cooldown", 0) <= 0.1 and me["energy"] >= lw["stats"].get("energy", 3):
                     fire[li] = True
         # laser (hitscan) + gun: while the laser charges we aim with gun lead so the gun keeps firing;
         # in the last moment we switch to the exact (no-lead) laser line and release when aligned.
@@ -1112,7 +1112,7 @@ class Bot:
         mo = slots.get("mortar")
         if mo is not None and not npc:
             mw = weps[mo]
-            if 28 < d < 220 and mw.get("cooldown", 0) <= 0.05:
+            if 28 < d < 220 and mw.get("cooldown", 0) <= 0.1:
                 sol = self.mortar_aim(me, tgt, mw)
                 if sol is not None and (aim is None or not vis):
                     yaw, pitch, D = sol
@@ -1127,7 +1127,7 @@ class Bot:
             yaw, pitch, hd, _ = self.lead(me, tgt, spd)
             if aim is None or (not laser_aim_now and li is None):
                 aim = [yaw, pitch]
-            if vis and hd < rng * 0.97 and gw.get("ammo", 1) > 0 and gw.get("reload", 0) == 0:
+            if vis and hd < rng * 0.97 and (gw.get("ammo", 1) > 0 or 0 < gw.get("reload", 0) <= 0.1) and gw.get("reload", 0) <= 0.1:
                 tol = 2.2 if not npc else 1.2
                 if self.aligned(me, yaw, pitch, hd, tol):
                     fire[gi] = True
