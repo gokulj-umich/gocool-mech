@@ -254,7 +254,7 @@ P = {
     "recover_hp": 0.6,          # after a retreat, only re-engage above this HP (or for an easy finish)
     "endgame_t": 330.0,
     "return_fire": True,        # v14: shoot visible attackers even when we decline to engage them
-    "return_fire_r": 230.0,
+    "return_fire_r": 200.0,
     "commit": True,            # v13-B: stick to one target until dead, prefer isolated ones, burst->survival on heat
     "heat_max": 2,
     "ghost_max_age": 12.0,      # v13-C sets 5.5 (only stalk while the estimate is trustworthy)
@@ -323,6 +323,7 @@ class Bot:
         self.hit_ids = set()      # mechs we have already damaged (no longer unaware)
         self.recovering = False
         self.cur_tid = None
+        self.rf_until = 0.0       # after return-fire retreat: don't walk back in for a while
         self.seen_at = {}         # enemy id -> last time seen (for "heat": how many bots are on us)
         self.survival = False
         self.roof_since = None
@@ -637,14 +638,20 @@ class Bot:
             self.cur_tid if self.cur_tid in self.tracks and t - self.tracks[self.cur_tid]["t"] < 5.0 else None)
         # return fire: an attacker we chose not to engage (pack, survival, endgame) still gets shot at
         fire_tgt = None
-        if P["return_fire"] and target is None and not P["pacifist"]:
+        rf_eyes = 0
+        for e in enemies:
+            if e["_d"] < 200 and abs(wrap(e["aim"][0] - math.atan2(y - e["pos"][1], x - e["pos"][0]))) < 0.35:
+                rf_eyes += 1
+        spotted = recently_hit or rf_eyes > 0      # don't wake an unaware pack: the whole squad hears us
+        if (P["return_fire"] and target is None and not P["pacifist"]
+                and (not P["stealth"] or recently_hit) and (t >= P["powerup_until"] or recently_hit)):
             fb = 1e18
             for e in enemies:
                 if e["_d"] > P["return_fire_r"]:
                     continue
                 b_e2me = math.atan2(y - e["pos"][1], x - e["pos"][0])
                 facing = abs(wrap(e["aim"][0] - b_e2me)) < 0.35
-                if not (recently_hit or facing or e["_d"] < 150):
+                if not (spotted or e["_d"] < 50):
                     continue
                 if not w.los(muzzle, (e["pos"][0], e["pos"][1], e["pos"][2] + 4.5)):
                     continue
@@ -833,16 +840,17 @@ class Bot:
         elif pp_res is not None:
             label = pp_res["label"]
             move, boost = pp_res["move"], pp_res["boost"]
-        elif fire_tgt is not None:
+        elif fire_tgt is not None and (recently_hit or eyes_on_us >= 2):
             label = f"return-fire {fire_tgt['id']}"
             move = self.retreat_vector(me, threats or [fire_tgt], circle)
-        elif (P["ghost_hunt"] and not P["stealth"] and not self.survival and t >= P["powerup_until"] and ghost is not None and hp_frac > 0.55 and not heal_mode
+            self.rf_until = t + 3.0
+        elif (fire_tgt is None and t >= self.rf_until and P["ghost_hunt"] and not P["stealth"] and not self.survival and t >= P["powerup_until"] and ghost is not None and hp_frac > 0.55 and not heal_mode
               and zone_ok(ghost["pos"][0], ghost["pos"][1])):
             label = f"stalk {ghost['id']}"
             pk = self.peek_point(me, ghost, muzzle, t)
             move = self.go_to(me, self.local_plan, pk if pk is not None else (ghost["pos"][0], ghost["pos"][1]), t)
             farm_shoot = ("ghost", ghost)
-        elif (P["hunt_hidden"] and not P["stealth"] and not self.survival and t >= P["powerup_until"] and self.heard is not None and t - self.heard[2] < 3.0 and hp_frac > 0.5
+        elif (fire_tgt is None and t >= self.rf_until and P["hunt_hidden"] and not P["stealth"] and not self.survival and t >= P["powerup_until"] and self.heard is not None and t - self.heard[2] < 3.0 and hp_frac > 0.5
               and not heal_mode and zone_ok(x + math.cos(self.heard[0]) * self.heard[1], y + math.sin(self.heard[0]) * self.heard[1])):
             b, dm, _ = self.heard
             label = "hunt-sound"
@@ -894,7 +902,7 @@ class Bot:
                 move = self.go_to(me, self.local_plan, (c["pos"][0], c["pos"][1]), t)
             if vis and dd < 120:
                 farm_shoot = ("crate", c)
-        elif P["assassin"] and not self.survival and t < P["roam_until"] and hp_frac > P["roam_hp"] and not heal_mode:
+        elif fire_tgt is None and t >= self.rf_until and P["assassin"] and not self.survival and t < P["roam_until"] and hp_frac > P["roam_hp"] and not heal_mode:
             label = "roam"
             rp = self.roam_point(obs, circle, t)
             move = self.go_to(me, self.zone_plan, rp, t)
@@ -961,6 +969,9 @@ class Bot:
             aim, fire = self.shoot(me, target, slots, weps, muzzle, t)
         elif fire_tgt is not None:
             aim, fire = self.shoot(me, fire_tgt, slots, weps, muzzle, t)
+            la = slots.get("laser")
+            if la is not None and hp_frac < 0.35 and (weps[la].get("charge") or 0) == 0:
+                fire[la] = False   # charging halves our speed: don't start one while escaping low
         elif farm_shoot is not None and farm_shoot[0] == "ghost":
             gh = farm_shoot[1]
             aim, fire = self.shoot(me, gh, slots, weps, muzzle, t)
