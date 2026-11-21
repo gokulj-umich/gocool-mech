@@ -237,7 +237,8 @@ P = {
     "pacifist": False,          # diagnostic: never fight, only hide/evade
     "aggressive": True,
     "hunt_hidden": True,
-    "hold_angles": True,        # hidden target pushing us -> hold still behind cover with a charged laser
+    "hold_angles": True,
+    "ghost_hunt": True,         # keep stalking enemies for 12 s after the 5 s memory ends        # hidden target pushing us -> hold still behind cover with a charged laser
     "edge_hide": True,          # hide with back to a wall near the zone edge        # peek for a firing line, pre-charge laser, hunt toward sounds         # constant motion + boost jinks, chase wounded, retreat late
     "cube_r": 110.0, "crate_r": 110.0, "npc_r": 160.0, "npc_stand": 62.0,
     "laser_hunt_r": 320.0, "open_scan_s": 3.0,
@@ -287,6 +288,7 @@ class Bot:
         self.scan_start = None
         self.peek = None          # (x, y, target_id, until_t)
         self.heard = None         # (bearing, dist_m, t)
+        self.tracks = {}          # enemy id -> dict(pos, vel, t, hp, max_hp, weapons)
 
     # ------------------------------------------------------------------ helpers
     def zone_goal(self, obs):
@@ -493,6 +495,24 @@ class Bot:
         for e in enemies:
             e["_d"] = d2(e["pos"], pos)
         enemies.sort(key=lambda e: e["_d"])
+        for e in enemies:
+            self.tracks[e["id"]] = {"pos": list(e["pos"]), "vel": list(e["vel"]), "t": t, "hp": e.get("hp", 1400),
+                                    "max_hp": e.get("max_hp", 1400), "weapons": e.get("weapons", []), "cubes": e.get("cubes", 0)}
+        cur_ids = {e["id"] for e in enemies}
+        ghost = None
+        for gid, tr in list(self.tracks.items()):
+            age = t - tr["t"]
+            if age > 12.0:
+                del self.tracks[gid]
+                continue
+            if gid in cur_ids or age < 0.2:
+                continue
+            k = min(age, 3.0)
+            gp = [tr["pos"][0] + tr["vel"][0] * k, tr["pos"][1] + tr["vel"][1] * k, tr["pos"][2]]
+            dd = d2(gp, pos)
+            if dd < 220 and (ghost is None or dd < ghost["_d"]):
+                ghost = {"id": gid, "kind": "mech", "pos": gp, "vel": [0.0, 0.0, 0.0], "hp": tr["hp"],
+                         "max_hp": tr["max_hp"], "weapons": tr["weapons"], "cubes": tr["cubes"], "_d": dd, "_los": False}
         if enemies:
             self.enemy_seen_t = t
 
@@ -517,7 +537,8 @@ class Bot:
             ez = e["pos"][2] + 4.5
             vis = w.los(muzzle, (e["pos"][0], e["pos"][1], ez))
             e["_los"] = vis
-            sc = e["_d"] + (0 if vis else 150) + e.get("hp", 1400) * 0.03
+            # cheapest point first: weight remaining HP heavily (a wounded bot is a near-free kill)
+            sc = e["_d"] * 0.5 + (0 if vis else 120) + e.get("hp", 1400) * 0.08
             if sc < best:
                 best, target = sc, e
         # NPC/crate farming only when no mechs around
@@ -676,6 +697,12 @@ class Bot:
                 if reloading and not other_ready:
                     label += " reload-cover"
                     move = self.retreat_vector(me, threats or [target], circle)
+        elif (P["ghost_hunt"] and ghost is not None and hp_frac > 0.55 and not heal_mode
+              and zone_ok(ghost["pos"][0], ghost["pos"][1])):
+            label = f"stalk {ghost['id']}"
+            pk = self.peek_point(me, ghost, muzzle, t)
+            move = self.go_to(me, self.local_plan, pk if pk is not None else (ghost["pos"][0], ghost["pos"][1]), t)
+            farm_shoot = ("ghost", ghost)
         elif (P["hunt_hidden"] and self.heard is not None and t - self.heard[2] < 3.0 and hp_frac > 0.8
               and not heal_mode and zone_ok(x + math.cos(self.heard[0]) * self.heard[1], y + math.sin(self.heard[0]) * self.heard[1])):
             b, dm, _ = self.heard
@@ -779,6 +806,10 @@ class Bot:
         aim = None
         if target is not None:
             aim, fire = self.shoot(me, target, slots, weps, muzzle, t)
+        elif farm_shoot is not None and farm_shoot[0] == "ghost":
+            gh = farm_shoot[1]
+            aim, fire = self.shoot(me, gh, slots, weps, muzzle, t)
+            fire = [f if (slots.get("laser") == i) else False for i, f in enumerate(fire)]
         elif farm_shoot is not None and farm_shoot[0] == "npc":
             aim, fire = self.shoot(me, farm_shoot[1], slots, weps, muzzle, t, npc=True)
         elif farm_shoot is not None:
