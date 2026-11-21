@@ -237,12 +237,12 @@ P = {
     "pacifist": False,          # diagnostic: never fight, only hide/evade
     "aggressive": True,
     "hunt_hidden": True,
-    "hold_angles": True,
+    "hold_angles": False,
     "ghost_hunt": True,         # keep stalking enemies for 12 s after the 5 s memory ends        # hidden target pushing us -> hold still behind cover with a charged laser
-    "edge_hide": True,          # hide with back to a wall near the zone edge        # peek for a firing line, pre-charge laser, hunt toward sounds         # constant motion + boost jinks, chase wounded, retreat late
+    "edge_hide": False,          # hide with back to a wall near the zone edge        # peek for a firing line, pre-charge laser, hunt toward sounds         # constant motion + boost jinks, chase wounded, retreat late
     "cube_r": 110.0, "crate_r": 110.0, "npc_r": 160.0, "npc_stand": 62.0,
     "laser_hunt_r": 320.0, "open_scan_s": 3.0,
-    "drops": True, "drop_r": 200.0, "heal_to": 0.85,
+    "drops": True, "drop_r": 200.0, "heal_to": 0.6,
 }
 
 UPGRADE_PRIORITY = ["plating", "laser_damage", "laser_charge", "armor", "gun_rate", "gun_damage", "nanites",
@@ -703,7 +703,7 @@ class Bot:
             pk = self.peek_point(me, ghost, muzzle, t)
             move = self.go_to(me, self.local_plan, pk if pk is not None else (ghost["pos"][0], ghost["pos"][1]), t)
             farm_shoot = ("ghost", ghost)
-        elif (P["hunt_hidden"] and self.heard is not None and t - self.heard[2] < 3.0 and hp_frac > 0.8
+        elif (P["hunt_hidden"] and self.heard is not None and t - self.heard[2] < 3.0 and hp_frac > 0.5
               and not heal_mode and zone_ok(x + math.cos(self.heard[0]) * self.heard[1], y + math.sin(self.heard[0]) * self.heard[1])):
             b, dm, _ = self.heard
             label = "hunt-sound"
