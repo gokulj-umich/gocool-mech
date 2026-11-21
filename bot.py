@@ -250,7 +250,7 @@ P = {
     "mode_detect": True,        # deaths we did not cause early -> real free-for-all -> survival mode
     "backstab_laser_first": True,
     "smart_targets": True,      # prefer wounded / facing-away / exposed / laser-charging targets, avoid escorted ones
-    "gang_escape": True,        # v19: hit by >= gang_n different mechs within gang_window s -> retreat gang_hold s
+    "gang_escape": False,        # v19: hit by >= gang_n different mechs within gang_window s -> retreat gang_hold s
     "gang_n": 2, "gang_window": 3.0, "gang_hold": 4.0,
     "converge_n": 3,            # this many enemies with eyes on us -> break line of sight first
     "recover_hp": 0.6,          # after a retreat, only re-engage above this HP (or for an easy finish)
@@ -279,6 +279,10 @@ P = {
 }
 P.update({"press_hp": 0.45, "press_gap": 0.25, "press_r": 45.0, "forget_dead": False, "farm_hp_gate": False, "drone_avoid": False, "drone_avoid_hp": 0.8,
           "press_multi_block": False, "fight_boost": True, "retreat_hidden_w": 60.0, "gang_fire": True})
+# v21 BERSERK (extreme probe): always fight. No survival switch, no retreat, no hiding to heal,
+# no recovering wait, no pack skipping, no endgame caution, no reload cover.
+P.update({"skip_packs": False, "heat_max": 99, "retreat_hp": 0.0, "retreat_hp_multi": 0.0,
+          "converge_n": 99, "heal_to": 0.0, "recover_hp": 0.0, "endgame_t": 9999.0, "reload_cover": False})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
     import json as _json
@@ -658,7 +662,7 @@ class Bot:
                     sc -= 60.0  # it is facing away: our hits land on its back
             if P["commit"]:
                 escorts_b = sum(1 for o in enemies if o is not e and d2(o["pos"], e["pos"]) < 60)
-                if escorts_b >= 2 and thp >= 0.3:
+                if escorts_b >= 2 and thp >= 0.3 and P["skip_packs"]:
                     continue                              # attacking a pack invites the squad
                 sc += escorts_b * 30.0
                 if e["id"] == self.cur_tid:
