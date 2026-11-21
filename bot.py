@@ -235,6 +235,10 @@ P = {
     "reload_cover": False,      # step out of sight while the gun reloads
     "hide_shuffle": False,      # never stand perfectly still while hiding
     "pacifist": False,          # diagnostic: never fight, only hide/evade
+    "stealth": False,            # survive to the final burn: stay unseen, silent, fight only when cornered
+    "stealth_fight_r": 50.0,
+    "assassin": True,           # roam to find house bots early and prefer ones facing away (rear hits x1.5)
+    "roam_until": 330.0,
     "aggressive": True,
     "hunt_hidden": True,
     "hold_angles": False,
@@ -530,6 +534,8 @@ class Bot:
         for e in enemies:
             if P["pacifist"]:
                 break
+            if P["stealth"] and e["_d"] > P["stealth_fight_r"] and not recently_hit:
+                continue
             if e["_d"] > P["engage_r"]:
                 continue
             if P["passive"] and e["_d"] > P["close_r"] and not recently_hit:
@@ -539,6 +545,10 @@ class Bot:
             e["_los"] = vis
             # cheapest point first: weight remaining HP heavily (a wounded bot is a near-free kill)
             sc = e["_d"] * 0.5 + (0 if vis else 120) + e.get("hp", 1400) * 0.08
+            if P["assassin"]:
+                b_e2me = math.atan2(y - e["pos"][1], x - e["pos"][0])
+                if abs(wrap(e["aim"][0] - b_e2me)) > math.pi / 2:
+                    sc -= 60.0  # it is facing away: our hits land on its back
             if sc < best:
                 best, target = sc, e
         # NPC/crate farming only when no mechs around
@@ -644,7 +654,7 @@ class Bot:
         n_threats = len(threats)
         my_hp = me["hp"]
         strongest = max((e.get("hp", 1400) for e in threats), default=0)
-        losing = (P["pacifist"] and bool(threats)) or threats and (hp_frac < P["retreat_hp"] or (hp_frac < P["retreat_hp_multi"] and (n_threats >= 2 or strongest > my_hp * 1.3)))
+        losing = (P["pacifist"] and bool(threats)) or (P["stealth"] and bool(threats) and target is None) or threats and (hp_frac < P["retreat_hp"] or (hp_frac < P["retreat_hp_multi"] and (n_threats >= 2 or strongest > my_hp * 1.3)))
         near_enemy = min((e["_d"] for e in enemies), default=999.0)
         heal_mode = hp_frac < P["heal_to"] and not threats and (t - self.last_damage_t) > 0.5
 
@@ -697,13 +707,13 @@ class Bot:
                 if reloading and not other_ready:
                     label += " reload-cover"
                     move = self.retreat_vector(me, threats or [target], circle)
-        elif (P["ghost_hunt"] and ghost is not None and hp_frac > 0.55 and not heal_mode
+        elif (P["ghost_hunt"] and not P["stealth"] and ghost is not None and hp_frac > 0.55 and not heal_mode
               and zone_ok(ghost["pos"][0], ghost["pos"][1])):
             label = f"stalk {ghost['id']}"
             pk = self.peek_point(me, ghost, muzzle, t)
             move = self.go_to(me, self.local_plan, pk if pk is not None else (ghost["pos"][0], ghost["pos"][1]), t)
             farm_shoot = ("ghost", ghost)
-        elif (P["hunt_hidden"] and self.heard is not None and t - self.heard[2] < 3.0 and hp_frac > 0.5
+        elif (P["hunt_hidden"] and not P["stealth"] and self.heard is not None and t - self.heard[2] < 3.0 and hp_frac > 0.5
               and not heal_mode and zone_ok(x + math.cos(self.heard[0]) * self.heard[1], y + math.sin(self.heard[0]) * self.heard[1])):
             b, dm, _ = self.heard
             label = "hunt-sound"
@@ -731,7 +741,7 @@ class Bot:
         elif calm and loot_goal is not None:
             label = "loot " + loot_goal[3]
             move = self.go_to(me, self.local_plan, (loot_goal[0], loot_goal[1]), t)
-        elif calm and npc_tgt is not None:
+        elif calm and npc_tgt is not None and not P["stealth"]:
             n, dd = npc_tgt
             label = "npc"
             vis = w.los(muzzle, (n["pos"][0], n["pos"][1], n["pos"][2] + 1.75))
@@ -746,7 +756,7 @@ class Bot:
                 move = self.fight_vector(me, n, slots, weps, circle, want=stand)
             if vis:
                 farm_shoot = ("npc", n)
-        elif calm and crate_tgt is not None and P["crates"]:
+        elif calm and crate_tgt is not None and P["crates"] and not P["stealth"]:
             c, dd = crate_tgt
             label = "crate"
             cz = c["pos"][2] + 1.2
@@ -755,6 +765,10 @@ class Bot:
                 move = self.go_to(me, self.local_plan, (c["pos"][0], c["pos"][1]), t)
             if vis and dd < 120:
                 farm_shoot = ("crate", c)
+        elif P["assassin"] and t < P["roam_until"] and hp_frac > 0.6 and not heal_mode:
+            label = "roam"
+            rp = self.roam_point(obs, circle, t)
+            move = self.go_to(me, self.zone_plan, rp, t)
         else:
             hide = self.pick_hide(obs, circle)
             dd = d2(hide, pos)
@@ -769,6 +783,14 @@ class Bot:
                 if P["hide_shuffle"]:
                     ph = t * 0.9 + self.scan_phase
                     move = [0.4 * math.cos(ph), 0.4 * math.sin(ph)]
+
+        # ---- stealth: move quietly (< step_speed) unless running from the zone or from fire
+        if P["stealth"] and not (urgent_zone and zgoal is not None):
+            if label.startswith("retreat"):
+                boost = boost and (hp_frac < 0.5 or (t - self.last_damage_t) < 2.0)
+            elif not label.startswith("fight"):
+                boost = False
+                speed_scale = min(speed_scale, 0.4)
 
         # ---- dodging (adds a lateral component)
         dodge = self.dodge_vector(obs, me, enemies)
@@ -961,6 +983,28 @@ class Bot:
             mvx += ax / n * 0.8
             mvy += ay / n * 0.8
         return [mvx, mvy]
+
+    def roam_point(self, obs, circle, t):
+        """Where house bots are likely: inside the next circle, away from where we already looked."""
+        cx, cy, r, mr = circle
+        me = obs["self"]["pos"]
+        if getattr(self, "_roam", None) is not None and t < self._roam[2] and d2(self._roam, me) > 15.0:
+            return (self._roam[0], self._roam[1])
+        best = None
+        for k in range(10):
+            a = random.uniform(-math.pi, math.pi)
+            rr = random.uniform(0.15, 0.75) * max(mr, 20.0)
+            px, py = cx + math.cos(a) * rr, cy + math.sin(a) * rr
+            if not self.w.walkable(px, py):
+                continue
+            dd = d2((px, py), me)
+            sc = abs(dd - 120.0)  # a fresh area ~120 m away
+            if best is None or sc < best[0]:
+                best = (sc, px, py)
+        if best is None:
+            best = (0, cx, cy)
+        self._roam = (best[1], best[2], t + 25.0)
+        return (best[1], best[2])
 
     def peek_point(self, me, tgt, muzzle, t):
         """Nearest walkable spot from which our muzzle has a line to a hidden (remembered) target."""
