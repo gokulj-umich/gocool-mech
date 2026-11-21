@@ -49,6 +49,9 @@ class World:
         self.near = d["near2"]
         self.H, self.W = self.walk.shape
         self.walk_l = self.walk.ravel().tolist()
+        self.roof2 = d["roof2"] if "roof2" in d else np.full(self.walk.shape, -1, np.int16)
+        self.roofs = d["roofs"] if "roofs" in d else np.zeros((0, 6), np.float32)
+        self.climb = d["climb"] if "climb" in d else np.zeros((0, 3), np.float32)
         self.surf_l = self.surf.ravel().tolist()
 
     # 2 m nav grid
@@ -63,6 +66,10 @@ class World:
     def walkable(self, x, y):
         i, j = self.cell(x, y)
         return self.walk_l[j * self.W + i]
+
+    def roof_at(self, x, y):
+        i, j = self.cell(x, y)
+        return int(self.roof2[j, i])
 
     def nearest_walk(self, i, j):
         return int(self.near[1, j, i]), int(self.near[0, j, i])
@@ -237,8 +244,16 @@ P = {
     "pacifist": False,          # diagnostic: never fight, only hide/evade
     "stealth": False,            # survive to the final burn: stay unseen, silent, fight only when cornered
     "stealth_fight_r": 50.0,
-    "assassin": True,           # roam to find house bots early and prefer ones facing away (rear hits x1.5)
-    "roam_until": 480.0, "roam_hp": 0.5,
+    "power_pos": False,          # midgame: hold a rooftop inside the next zone, shoot from its edge
+    "pp_start": 150.0, "pp_end": 330.0, "pp_climb_s": 7.0,
+    "assassin": True,
+    "mode_detect": True,        # deaths we did not cause early -> real free-for-all -> survival mode
+    "backstab_laser_first": True,
+    "smart_targets": True,      # prefer wounded / facing-away / exposed / laser-charging targets, avoid escorted ones
+    "converge_n": 3,            # this many enemies with eyes on us -> break line of sight first
+    "recover_hp": 0.6,          # after a retreat, only re-engage above this HP (or for an easy finish)
+    "endgame_t": 330.0,         # final-burn prep: only close / finishing / forced fights after this           # roam to find house bots early and prefer ones facing away (rear hits x1.5)
+    "roam_until": 300.0, "roam_hp": 0.6,
     "aggressive": True,
     "hunt_hidden": True,
     "hold_angles": False,
@@ -293,6 +308,13 @@ class Bot:
         self.peek = None          # (x, y, target_id, until_t)
         self.heard = None         # (bearing, dist_m, t)
         self.tracks = {}          # enemy id -> dict(pos, vel, t, hp, max_hp, weapons)
+        self.pp = None            # power position: dict(roof, state, t0, climb)
+        self.my_kills = 0
+        self.hit_ids = set()      # mechs we have already damaged (no longer unaware)
+        self.recovering = False
+        self.ffa = False          # True once we see deaths we did not cause (real free-for-all)
+        self.roof_black = {}      # roof id -> blacklisted until t
+        self.roof_peek = None
 
     # ------------------------------------------------------------------ helpers
     def zone_goal(self, obs):
@@ -484,11 +506,24 @@ class Bot:
                     if ev.get("bearing") is not None:
                         self.threat_bearing = ev["bearing"]
                         self.threat_t = t
+            elif et == "hit" and ev.get("target") is not None:
+                self.hit_ids.add(ev["target"])
+            elif et == "kill":
+                self.my_kills += 1
             elif et == "effect" and ev.get("effect") == "short":
                 self.shorted_until = t + 2.0
             elif et == "take_failed":
                 pass
 
+        if P["mode_detect"] and not self.ffa:
+            others_dead = (16 - obs.get("alive", 16)) - self.my_kills
+            if others_dead >= 2 and t < 150.0:
+                self.ffa = True
+                log(f"mode: free-for-all detected at t={t:.1f} (others dead {others_dead})")
+                # survival profile for a real FFA: stay unseen, fight only when cornered, no roaming
+                P["stealth"] = True
+                P["assassin"] = False
+                P["ghost_hunt"] = False
         for snd in obs.get("sounds", []):
             if snd["kind"] in ("gun", "laser", "laser_charge", "lightning", "step", "boost", "reload", "jet", "mortar") and snd["dist"] in ("near", "mid"):
                 dm = 35.0 if snd["dist"] == "near" else 105.0
@@ -545,6 +580,19 @@ class Bot:
             e["_los"] = vis
             # cheapest point first: weight remaining HP heavily (a wounded bot is a near-free kill)
             sc = e["_d"] * 0.5 + (0 if vis else 120) + e.get("hp", 1400) * 0.08
+            if P["smart_targets"]:
+                escorts = sum(1 for o in enemies if o is not e and d2(o["pos"], e["pos"]) < 50)
+                sc += escorts * 40.0                      # escorted targets are expensive
+                if e.get("charging"):
+                    sc -= 25.0                            # half-speed while charging: exposed
+                if e.get("hp", 1400) < 0.3 * e.get("max_hp", 1400):
+                    sc -= 60.0                            # finish it
+            thp = e.get("hp", 1400) / max(e.get("max_hp", 1400), 1)
+            easy = thp < 0.35 or e["_d"] < 40 or recently_hit
+            if P["smart_targets"] and self.recovering and not easy:
+                continue
+            if P["smart_targets"] and t >= P["endgame_t"] and not easy and e["_d"] > 60:
+                continue
             if P["assassin"]:
                 b_e2me = math.atan2(y - e["pos"][1], x - e["pos"][0])
                 if abs(wrap(e["aim"][0] - b_e2me)) > math.pi / 2:
@@ -654,9 +702,27 @@ class Bot:
         n_threats = len(threats)
         my_hp = me["hp"]
         strongest = max((e.get("hp", 1400) for e in threats), default=0)
-        losing = (P["pacifist"] and bool(threats)) or (P["stealth"] and bool(threats) and target is None) or threats and (hp_frac < P["retreat_hp"] or (hp_frac < P["retreat_hp_multi"] and (n_threats >= 2 or strongest > my_hp * 1.3)))
+        eyes_on_us = 0
+        for e in threats:
+            b_e2me = math.atan2(y - e["pos"][1], x - e["pos"][0])
+            if e["_d"] < 150 and abs(wrap(e["aim"][0] - b_e2me)) < 0.35:
+                eyes_on_us += 1
+        converging = P["smart_targets"] and eyes_on_us >= P["converge_n"]
+        losing = converging or (P["pacifist"] and bool(threats)) or (P["stealth"] and bool(threats) and target is None) or threats and (hp_frac < P["retreat_hp"] or (hp_frac < P["retreat_hp_multi"] and (n_threats >= 2 or strongest > my_hp * 1.3)))
         near_enemy = min((e["_d"] for e in enemies), default=999.0)
         heal_mode = hp_frac < P["heal_to"] and not threats and (t - self.last_damage_t) > 0.5
+        if losing:
+            self.recovering = True
+        elif self.recovering and hp_frac >= P["recover_hp"]:
+            self.recovering = False
+
+        # ---- power position (rooftop) for the midgame
+        pp_res = None
+        no_steer = False
+        if P["power_pos"] and not (urgent_zone and zgoal is not None):
+            pp_res = self.power_position(obs, me, circle, target, enemies, t, hp_frac, muzzle)
+        elif self.pp is not None:
+            self.pp = None
 
         # ---- movement decision
         move = [0.0, 0.0]
@@ -670,6 +736,10 @@ class Bot:
             label = "zone"
             move = self.go_to(me, self.zone_plan, zgoal, t)
             boost = (not me["in_zone"]) or (time_to_shrink < d2(zgoal, pos) / 11.0 + 3) or (t >= zone["shrink_start"])
+        elif pp_res is not None and pp_res["hold"]:
+            label = pp_res["label"]
+            move, boost, jump = pp_res["move"], pp_res["boost"], pp_res["jump"]
+            no_steer = True
         elif losing:
             label = "retreat"
             move = self.retreat_vector(me, threats, circle)
@@ -707,6 +777,9 @@ class Bot:
                 if reloading and not other_ready:
                     label += " reload-cover"
                     move = self.retreat_vector(me, threats or [target], circle)
+        elif pp_res is not None:
+            label = pp_res["label"]
+            move, boost = pp_res["move"], pp_res["boost"]
         elif (P["ghost_hunt"] and not P["stealth"] and ghost is not None and hp_frac > 0.55 and not heal_mode
               and zone_ok(ghost["pos"][0], ghost["pos"][1])):
             label = f"stalk {ghost['id']}"
@@ -805,7 +878,9 @@ class Bot:
         while self.last_pos and t - self.last_pos[0][0] > 1.6:
             self.last_pos.pop(0)
         mv = math.hypot(move[0], move[1])
-        if t < self.stuck_until and self.unstick_dir is not None:
+        if no_steer:
+            self.last_pos.clear()
+        elif t < self.stuck_until and self.unstick_dir is not None:
             move = list(self.unstick_dir)
             jump = me.get("grounded", True)
             boost = True
@@ -819,7 +894,7 @@ class Bot:
                 self.zone_plan.goal = None
                 self.local_plan.goal = None
 
-        if not (t < self.stuck_until):
+        if not (t < self.stuck_until) and not no_steer:
             move = self.steer(me, move)
         move = [move[0] * speed_scale, move[1] * speed_scale]
 
@@ -941,6 +1016,13 @@ class Bot:
                 tol = 2.2 if not npc else 1.2
                 if self.aligned(me, yaw, pitch, hd, tol):
                     fire[gi] = True
+            # an unaware target (facing away): let the full laser land on its back first, then the gun
+            if (P["backstab_laser_first"] and fire[gi] and la is not None and tgt.get("kind") == "mech"
+                    and tgt["id"] not in self.hit_ids
+                    and weps[la].get("cooldown", 0) <= 0.15 and t >= self.shorted_until):
+                b_t2me = math.atan2(me["pos"][1] - tgt["pos"][1], me["pos"][0] - tgt["pos"][0])
+                if abs(wrap(tgt["aim"][0] - b_t2me)) > math.pi / 2:
+                    fire[gi] = False
         if aim is None:
             yaw = math.atan2(tgt["pos"][1] - me["pos"][1], tgt["pos"][0] - me["pos"][0])
             aim = [yaw, 0.0]
@@ -983,6 +1065,136 @@ class Bot:
             mvx += ax / n * 0.8
             mvy += ay / n * 0.8
         return [mvx, mvy]
+
+    def power_position(self, obs, me, circle, target, enemies, t, hp_frac, muzzle):
+        """Rooftop power position. Returns None (not active) or a dict with move/boost/jump/label and
+        hold=True when we are climbing or on the roof (then this overrides fighting/retreat logic)."""
+        if not (P["pp_start"] <= t < P["pp_end"]):
+            self.pp = None
+            return None
+        w = self.w
+        if len(w.roofs) == 0:
+            return None
+        x, y, z = me["pos"]
+        cx, cy, r, mr = circle
+        # choose a roof inside the safe circle
+        if self.pp is not None:
+            k = self.pp["roof"]
+            rf = w.roofs[k]
+            if math.hypot(rf[3] - cx, rf[4] - cy) > max(mr * 0.95, 15.0) or self.roof_black.get(k, -1) > t:
+                self.pp = None
+        if self.pp is None:
+            best = None
+            for rf in w.roofs:
+                k = int(rf[0])
+                if self.roof_black.get(k, -1) > t:
+                    continue
+                if math.hypot(rf[3] - cx, rf[4] - cy) > mr * 0.8:
+                    continue
+                dd = math.hypot(rf[3] - x, rf[4] - y)
+                sc = dd + rf[2] * 0.5 - min(rf[5], 3000) * 0.004
+                if best is None or sc < best[0]:
+                    best = (sc, k)
+            if best is None:
+                return None
+            k = best[1]
+            pts = w.climb[w.climb[:, 0] == k]
+            if len(pts) == 0:
+                self.roof_black[k] = t + 120
+                return None
+            dd = np.hypot(pts[:, 1] - x, pts[:, 2] - y)
+            cp = pts[int(np.argmin(dd))]
+            self.pp = {"roof": k, "state": "travel", "t0": t, "climb": (float(cp[1]), float(cp[2]))}
+        k = self.pp["roof"]
+        rf = w.roofs[k]
+        top, ctr = float(rf[1]), (float(rf[3]), float(rf[4]))
+        on_roof = w.roof_at(x, y) == k and z > top - 1.5
+        res = {"move": [0.0, 0.0], "boost": False, "jump": False, "hold": False, "label": ""}
+        if on_roof:
+            self.pp["state"] = "on"
+            res["hold"] = True
+            gi = None
+            for i_, wp in enumerate(me["weapons"]):
+                if wp and wp["kind"] == "gun":
+                    gi = i_
+            reloading = gi is not None and me["weapons"][gi].get("reload", 0) > 0.3
+            tgt = target
+            if tgt is None and enemies:
+                tgt = enemies[0]
+            if tgt is not None and hp_frac > 0.35 and not reloading:
+                pk = self.roof_peek_point(me, k, top, tgt, t)
+                goal = pk if pk is not None else ctr
+                res["label"] = "roof-peek"
+            else:
+                goal = ctr
+                res["label"] = "roof-hold"
+            vx, vy = goal[0] - x, goal[1] - y
+            n = math.hypot(vx, vy)
+            if n > 1.5:
+                sp = 1.0 if n > 6 else 0.5
+                res["move"] = [vx / n * sp, vy / n * sp]
+            return res
+        if self.pp["state"] == "climb":
+            if t - self.pp["t0"] > P["pp_climb_s"]:
+                self.roof_black[k] = t + 90
+                self.pp = None
+                return None
+            res["hold"] = True
+            res["label"] = "climb"
+            vx, vy = ctr[0] - x, ctr[1] - y
+            n = math.hypot(vx, vy) or 1.0
+            res["move"] = [vx / n, vy / n]
+            if me.get("grounded", True):
+                res["jump"] = True
+            res["boost"] = z < top + 1.5 or not me.get("grounded", True)
+            return res
+        # travel to the climb point on the ground
+        cp = self.pp["climb"]
+        dcp = math.hypot(cp[0] - x, cp[1] - y)
+        if dcp < 3.5 and me["energy"] >= min(95.0, 30.0 + (top - z) * 1.8):
+            self.pp["state"] = "climb"
+            self.pp["t0"] = t
+            res["hold"] = True
+            res["label"] = "climb"
+            res["jump"] = True
+            return res
+        if t - self.pp["t0"] > 60.0:
+            self.roof_black[k] = t + 90
+            self.pp = None
+            return None
+        res["label"] = "to-roof"
+        if dcp < 3.5:
+            res["label"] = "to-roof wait-energy"
+            return res
+        res["move"] = self.go_to(me, self.local_plan, cp, t)
+        return res
+
+    def roof_peek_point(self, me, k, top, tgt, t):
+        """A spot on our roof from which our muzzle sees the target (nearest to us)."""
+        if self.roof_peek is not None and self.roof_peek[2] == tgt["id"] and t < self.roof_peek[3]:
+            return (self.roof_peek[0], self.roof_peek[1])
+        w = self.w
+        x, y, z = me["pos"]
+        mh = me["stats"].get("muzzle_height", 7.0)
+        tp = (tgt["pos"][0], tgt["pos"][1], tgt["pos"][2] + 4.5)
+        base = math.atan2(tp[1] - y, tp[0] - x)
+        best = None
+        for ring in (0.0, 4.0, 8.0, 12.0, 18.0, 26.0):
+            for kk in range(1 if ring == 0 else 10):
+                a = base + (kk - 5) * (TAU / 20)
+                px, py = x + math.cos(a) * ring, y + math.sin(a) * ring
+                if w.roof_at(px, py) != k:
+                    continue
+                if w.los((px, py, top + mh), tp, step=2.0):
+                    best = (px, py)
+                    break
+            if best is not None:
+                break
+        if best is None:
+            self.roof_peek = None
+            return None
+        self.roof_peek = (best[0], best[1], tgt["id"], t + 0.8)
+        return best
 
     def roam_point(self, obs, circle, t):
         """Where house bots are likely: inside the next circle, away from where we already looked."""
