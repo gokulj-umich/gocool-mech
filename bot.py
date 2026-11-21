@@ -274,7 +274,7 @@ P = {
     "edge_hide": False,          # hide with back to a wall near the zone edge        # peek for a firing line, pre-charge laser, hunt toward sounds         # constant motion + boost jinks, chase wounded, retreat late
     "cube_r": 110.0, "crate_r": 110.0, "npc_r": 160.0, "npc_stand": 62.0,
     "laser_hunt_r": 320.0, "open_scan_s": 3.0,
-    "drops": True, "drop_r": 200.0, "heal_to": 0.6,
+    "drops": True, "drop_r": 200.0, "heal_to": 0.95,  # v34: regen 45 HP/s after 5 s quiet -> enter every fight full
     "drop_heal": True,          # v15: supply drop = full heal + 3 cubes; go for it mid-fight, keep moving while capturing
 }
 P.update({"press_hp": 0.45, "press_gap": 0.25, "press_r": 45.0, "forget_dead": False, "farm_hp_gate": False, "drone_avoid": False, "drone_avoid_hp": 0.8,
