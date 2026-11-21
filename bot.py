@@ -284,6 +284,7 @@ P.update({"press_hp": 0.45, "press_gap": 0.25, "press_r": 45.0, "forget_dead": F
 P.update({"laser_grab": True, "laser_grab_r": 90.0,
           "recover_hp": 0.0, "endgame_t": 9999.0, "retreat_hp_multi": 0.25,
           "drone_avoid": True, "forget_dead": True, "farm_hp_gate": True})
+LEAD_DAMP = 1.2
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
     import json as _json
@@ -464,6 +465,17 @@ class Bot:
         vx, vy, vz = tgt["vel"]
         if abs(vz) < 1.0:
             vz = 0.0
+        if speed < 1e8 and tgt.get("kind") == "mech":
+            # v32 LeadDamp: house bots reverse strafe every ~0.4-0.9 s, so shrink the sideways lead
+            # the longer the shell flies (expected sideways travel, not current velocity x time)
+            rx, ry = tx - mx, ty - my
+            rl = math.hypot(rx, ry) or 1.0
+            ux, uy = rx / rl, ry / rl
+            vr = vx * ux + vy * uy
+            lx, ly = vx - vr * ux, vy - vr * uy
+            tf = rl / speed
+            k = 1.0 / (1.0 + LEAD_DAMP * tf)
+            vx, vy = vr * ux + lx * k, vr * uy + ly * k
         t = 0.0
         for _ in range(3):
             px, py, pz = tx + vx * t, ty + vy * t, tz + vz * t * 0.5
