@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"time"
 )
 
 type WStats struct {
@@ -87,6 +88,7 @@ type Obs struct {
 	Projs   []Proj  `json:"projectiles"`
 	Cubes   []Item  `json:"cubes"`
 	Pickups []Item  `json:"pickups"`
+	Crates  []Item  `json:"crates"`
 	Events  []Event `json:"events"`
 	Zone    *Zone   `json:"zone"`
 	Offer   *Offer  `json:"offer"`
@@ -117,6 +119,76 @@ type Bot struct {
 	strafeUntil float64
 	shorted     float64
 	lastCharge  float64
+
+	nav     *Nav
+	path    [][2]float64
+	pathG   [2]float64
+	pathT   float64
+	mem     map[int]*memItem
+	lootID  int
+	lootT   float64
+	badLoot map[int]float64
+}
+
+type memItem struct {
+	kind string
+	pos  [3]float64
+}
+
+// steer returns a unit direction toward (gx,gy) following A* waypoints; straight line fallback.
+func (b *Bot) steer(x, y, gx, gy, t float64) (float64, float64) {
+	if b.nav == nil || !b.nav.ok {
+		return norm(gx-x, gy-y)
+	}
+	if hyp(gx-x, gy-y) < 6 {
+		return norm(gx-x, gy-y)
+	}
+	if b.path == nil || t-b.pathT > 0.7 || hyp(b.pathG[0]-gx, b.pathG[1]-gy) > 8 {
+		b.path = b.nav.path(x, y, gx, gy, 12*time.Millisecond)
+		b.pathG = [2]float64{gx, gy}
+		b.pathT = t
+	}
+	for i, w := range b.path {
+		if hyp(w[0]-x, w[1]-y) > 4 {
+			// look ahead a few cells for smoother motion
+			j := i + 2
+			if j >= len(b.path) {
+				j = len(b.path) - 1
+			}
+			w = b.path[j]
+			if hyp(w[0]-x, w[1]-y) < 1 {
+				w = b.path[i]
+			}
+			return norm(w[0]-x, w[1]-y)
+		}
+	}
+	return norm(gx-x, gy-y)
+}
+
+func (b *Bot) updateMem(o *Obs, x, y float64) {
+	if b.mem == nil {
+		b.mem = map[int]*memItem{}
+		b.badLoot = map[int]float64{}
+	}
+	cur := map[int]bool{}
+	add := func(l []Item, kind string) {
+		for _, it := range l {
+			k := kind
+			if kind == "pk" {
+				k = it.Kind
+			}
+			b.mem[it.ID] = &memItem{k, it.Pos}
+			cur[it.ID] = true
+		}
+	}
+	add(o.Cubes, "cube")
+	add(o.Crates, "crate")
+	add(o.Pickups, "pk")
+	for id, m := range b.mem {
+		if !cur[id] && hyp(m.pos[0]-x, m.pos[1]-y) < 22 {
+			delete(b.mem, id)
+		}
+	}
 }
 
 func (b *Bot) lead(me *Self, tgt *Mech, speed float64) (yaw, pitch, hd float64) {
@@ -225,6 +297,7 @@ func (b *Bot) act(o *Obs) Action {
 	}
 	x, y := me.Pos[0], me.Pos[1]
 	moveX, moveY := 0.0, 0.0
+	shootCrate := false
 	// zone center / safety
 	zcx, zcy, zr := x, y, 1e9
 	if o.Zone != nil {
@@ -268,6 +341,24 @@ func (b *Bot) act(o *Obs) Action {
 		}
 		moveX = rx*radial + -ry*b.strafe*0.9
 		moveY = ry*radial + rx*b.strafe*0.9
+
+		if hpf > 0.3 {
+			b.updateMem(o, x, y)
+			cd, cx, cy := 100.0, 0.0, 0.0
+			for i := range o.Cubes {
+				c := &o.Cubes[i]
+				dd := hyp(c.Pos[0]-x, c.Pos[1]-y)
+				if dd < cd && hyp(c.Pos[0]-zcx, c.Pos[1]-zcy) < zr-25 {
+					cd, cx, cy = dd, c.Pos[0], c.Pos[1]
+				}
+			}
+			if cd < 100 {
+				moveX, moveY = b.steer(x, y, cx, cy, t)
+				if cd > 12 && me.Energy > 30 {
+					a.Boost = true
+				}
+			}
+		}
 
 		// shoot
 		spd := 252.0
@@ -380,36 +471,93 @@ func (b *Bot) act(o *Obs) Action {
 			a.Aim = [2]float64{math.Atan2(tgt.Pos[1]-y, tgt.Pos[0]-x), 0}
 		}
 	} else {
-		// no target: loot / zone / roam
-		bestD := 1e9
+		// no target: loot memory / zone / roam
+		b.updateMem(o, x, y)
+		bestU := 0.0
 		var tx, ty float64
-		found := false
-		for i := range o.Pickups {
-			p := &o.Pickups[i]
-			d := hyp(p.Pos[0]-x, p.Pos[1]-y)
-			if (p.Kind == "laser" && la < 0 || p.Kind == "lightning" && li < 0 && la >= 0 || p.Kind == "laser" && li >= 0 && la < 0) && d < 110 && d < bestD {
-				bestD, tx, ty, found = d, p.Pos[0], p.Pos[1], true
+		bestID, bestKind, bestD := -1, "", 0.0
+		for id, m := range b.mem {
+			if b.badLoot[id] > t {
+				continue
 			}
-		}
-		if !found {
-			for i := range o.Cubes {
-				p := &o.Cubes[i]
-				d := hyp(p.Pos[0]-x, p.Pos[1]-y)
-				if d < 100 && d < bestD {
-					bestD, tx, ty, found = d, p.Pos[0], p.Pos[1], true
+			d := hyp(m.pos[0]-x, m.pos[1]-y)
+			if hyp(m.pos[0]-zcx, m.pos[1]-zcy) > zr-25 {
+				continue
+			}
+			v := 0.0
+			switch m.kind {
+			case "cube":
+				v = 110
+			case "crate":
+				v = 105
+			case "laser":
+				if la < 0 {
+					v = 400
+					if d > 320 {
+						continue
+					}
+				}
+			case "lightning":
+				if li < 0 && la >= 0 {
+					v = 150
+					if d > 110 {
+						continue
+					}
 				}
 			}
+			if v == 0 || (m.kind != "laser" && d > 160) || (hpf <= 0.45 && d > 35 && m.kind != "laser") {
+				continue
+			}
+			u := v / (d + 18)
+			if id == b.lootID {
+				u *= 1.35
+			}
+			if u > bestU {
+				bestU, tx, ty, bestID, bestKind, bestD = u, m.pos[0], m.pos[1], id, m.kind, d
+			}
 		}
-		if found && !outside {
-			moveX, moveY = norm(tx-x, ty-y)
+		if bestID >= 0 {
+			if bestID != b.lootID {
+				b.lootID, b.lootT = bestID, t
+			} else if t-b.lootT > 25 {
+				b.badLoot[bestID] = t + 60
+				b.lootID = -1
+				bestID = -1
+			}
 		} else {
-			moveX, moveY = norm(zcx-x, zcy-y)
+			b.lootID = -1
+		}
+		if bestID >= 0 && !outside {
+			if bestKind == "crate" && bestD < 40 && gi >= 0 {
+				fake := &Mech{Kind: "crate", Pos: b.mem[bestID].pos}
+				fake.Pos[2] += 0.5
+				spd := 252.0
+				if me.Weapons[gi].Stats.Speed > 0 {
+					spd = me.Weapons[gi].Stats.Speed
+				}
+				yaw, pitch, hd := b.lead(me, fake, spd)
+				a.Aim = [2]float64{yaw, pitch}
+				gw := me.Weapons[gi]
+				if gw.Reload <= 0.1 && gw.Ammo > 0 && aligned(me, yaw, pitch, hd, 2.0) {
+					a.Fire[gi] = true
+				}
+				if bestD > 28 {
+					moveX, moveY = b.steer(x, y, tx, ty, t)
+				}
+				shootCrate = true
+			} else {
+				moveX, moveY = b.steer(x, y, tx, ty, t)
+			}
+		} else {
+			moveX, moveY = b.steer(x, y, zcx, zcy, t)
 			if zd < zr*0.35 {
 				moveX, moveY = 0, 0
 			}
 		}
 		// idle sweep
-		a.Aim = [2]float64{wrap(me.Aim[0] + 0.5), 0}
+		if !shootCrate {
+			a.Aim = [2]float64{wrap(me.Aim[0] + 0.5), 0}
+		}
 		if gi >= 0 {
 			gw := me.Weapons[gi]
 			if gw.Ammo < 6 && gw.Reload <= 0 {
@@ -429,7 +577,7 @@ func (b *Bot) act(o *Obs) Action {
 	}
 	// zone override
 	if outside {
-		zx, zy := norm(zcx-x, zcy-y)
+		zx, zy := b.steer(x, y, zcx, zcy, t)
 		moveX, moveY = moveX*0.3+zx, moveY*0.3+zy
 		if me.Energy > 40 {
 			a.Boost = true
@@ -543,6 +691,15 @@ func main() {
 		}
 		switch h.Type {
 		case "hello":
+			var hh struct {
+				Map struct {
+					Dir string `json:"dir"`
+				} `json:"map"`
+			}
+			json.Unmarshal(l, &hh)
+			if hh.Map.Dir != "" {
+				bot.nav = loadNav(hh.Map.Dir)
+			}
 			send(map[string]string{"type": "ready", "name": "gocool-go-F"})
 		case "obs":
 			var o Obs
