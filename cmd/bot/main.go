@@ -66,6 +66,7 @@ type Event struct {
 	Type   string `json:"type"`
 	Effect string `json:"effect"`
 	By     int    `json:"by"`
+	Target int    `json:"target"`
 }
 type Zone struct {
 	Center      [2]float64 `json:"center"`
@@ -140,6 +141,7 @@ type Bot struct {
 	retreating  bool
 	hitFrom     map[int]float64
 	curTid      int
+	hitIDs      map[int]bool
 }
 
 // retreatDir: best of 16 headings: far from threats, inside zone, walkable.
@@ -189,39 +191,6 @@ func (b *Bot) steer(x, y, gx, gy, t float64) (float64, float64) {
 	return norm(gx-x, gy-y)
 }
 
-func (b *Bot) lead(me *Self, tgt *Mech, speed float64) (yaw, pitch, hd float64) {
-	mz := me.Pos[2] + me.Stats.MuzzleHeight
-	if me.Stats.MuzzleHeight == 0 {
-		mz = me.Pos[2] + 7
-	}
-	tz := tgt.Pos[2] + 4.5
-	if tgt.Kind != "mech" {
-		tz = tgt.Pos[2] + 1.75
-	}
-	vx, vy, vz := tgt.Vel[0], tgt.Vel[1], tgt.Vel[2]
-	if math.Abs(vz) < 1 {
-		vz = 0
-	}
-	t := 0.0
-	for i := 0; i < 3; i++ {
-		px, py, pz := tgt.Pos[0]+vx*t, tgt.Pos[1]+vy*t, tz+vz*t*0.5
-		d := math.Sqrt(math.Pow(px-me.Pos[0], 2) + math.Pow(py-me.Pos[1], 2) + math.Pow(pz-mz, 2))
-		if speed > 0 {
-			t = d / speed
-		} else {
-			t = 0
-		}
-	}
-	px, py, pz := tgt.Pos[0]+vx*t, tgt.Pos[1]+vy*t, tz+vz*t*0.5
-	hd = hyp(px-me.Pos[0], py-me.Pos[1])
-	return math.Atan2(py-me.Pos[1], px-me.Pos[0]), math.Atan2(pz-mz, math.Max(hd, 0.1)), hd
-}
-
-func aligned(me *Self, yaw, pitch, dist, tol float64) bool {
-	t := math.Atan2(tol, math.Max(dist, 1)) + 0.004
-	return math.Abs(wrap(me.Aim[0]-yaw)) <= t && math.Abs(me.Aim[1]-pitch) <= t*1.5+0.01
-}
-
 func norm(x, y float64) (float64, float64) {
 	n := hyp(x, y)
 	if n < 1e-9 {
@@ -238,6 +207,9 @@ func (b *Bot) act(o *Obs) Action {
 	for _, e := range o.Events {
 		if e.Type == "effect" && e.Effect == "short" {
 			b.shorted = t + 2.0
+		}
+		if e.Type == "hit" && e.Target != 0 {
+			b.hitIDs[e.Target] = true
 		}
 		if e.Type == "damaged" && e.By != 0 {
 			b.hitFrom[e.By] = t
@@ -260,7 +232,7 @@ func (b *Bot) act(o *Obs) Action {
 		a.Pick = &bi
 	}
 	// weapon slots
-	gi, la, li := -1, -1, -1
+	gi, la, li, mo := -1, -1, -1, -1
 	for i, w := range me.Weapons {
 		if w == nil || i > 1 {
 			continue
@@ -272,6 +244,8 @@ func (b *Bot) act(o *Obs) Action {
 			la = i
 		case "lightning":
 			li = i
+		case "mortar":
+			mo = i
 		}
 	}
 	hpf := me.HP / math.Max(me.MaxHP, 1)
@@ -331,7 +305,6 @@ func (b *Bot) act(o *Obs) Action {
 	outside := zd > zr-25
 
 	if tgt != nil {
-		clear := b.nav.los(x, y, me.Pos[2]+7, tgt.Pos[0], tgt.Pos[1], tgt.Pos[2]+4.5)
 		d := hyp(tgt.Pos[0]-x, tgt.Pos[1]-y)
 		want := 100.0
 		if la >= 0 {
@@ -377,116 +350,7 @@ func (b *Bot) act(o *Obs) Action {
 		moveX = ax*radial + -ry*b.strafe*0.9
 		moveY = ay*radial + rx*b.strafe*0.9
 
-		// shoot
-		spd := 252.0
-		rng := 230.0
-		if gi >= 0 {
-			gw := me.Weapons[gi]
-			if gw.Stats.Speed > 0 {
-				spd = gw.Stats.Speed
-			}
-			if gw.Stats.Range > 0 {
-				rng = gw.Stats.Range
-			}
-		}
-		laserAim := false
-		set := false
-		if li >= 0 {
-			lw := me.Weapons[li]
-			lr := lw.Stats.Range
-			if lr == 0 {
-				lr = 45
-			}
-			if d < lr*0.95 && tgt.Kind == "mech" || d < lr*0.95 {
-				yaw := math.Atan2(tgt.Pos[1]-y, tgt.Pos[0]-x)
-				a.Aim = [2]float64{yaw, 0}
-				set = true
-				cone := lw.Stats.ConeDeg
-				if cone == 0 {
-					cone = 30
-				}
-				if math.Abs(wrap(me.Aim[0]-yaw)) < cone*0.4*math.Pi/180 && lw.Cooldown <= 0.1 && me.Energy >= 3 && clear {
-					a.Fire[li] = true
-				}
-			}
-		}
-		if la >= 0 && !a.Fire[max0(li)] || la >= 0 && li < 0 {
-			lw := me.Weapons[la]
-			lr := lw.Stats.Range
-			if lr == 0 {
-				lr = 280
-			}
-			full := lw.Stats.Charge
-			if full == 0 {
-				full = 0.75
-			}
-			hold := lw.Stats.HoldS
-			if hold == 0 {
-				hold = 2
-			}
-			minc := lw.Stats.MinCharge
-			if minc == 0 {
-				minc = 0.15
-			}
-			minf := lw.Stats.MinFrac
-			if minf == 0 {
-				minf = 0.35
-			}
-			ly, lp, lhd := b.lead(me, tgt, 1e9)
-			ch := lw.Charge
-			if d < lr*0.97 && t >= b.shorted && (li < 0 || d > 30) && clear {
-				if lw.Cooldown <= 0.15 {
-					lethal := false
-					if tgt.Kind == "mech" && ch >= minc && ch < full-0.12 {
-						dmg := lw.Stats.Damage * (minf + (1-minf)*ch/full)
-						dmg *= 1 + 0.04*math.Min(float64(me.Cubes), 10)
-						lethal = tgt.HP > 0 && dmg*0.7 >= tgt.HP
-					}
-					if lethal {
-						laserAim = true
-						a.Aim = [2]float64{ly, lp}
-						set = true
-						a.Fire[la] = !aligned(me, ly, lp, lhd, 1.2)
-					} else if ch < full-0.12 {
-						a.Fire[la] = true
-					} else {
-						laserAim = true
-						a.Aim = [2]float64{ly, lp}
-						set = true
-						if aligned(me, ly, lp, lhd, 1.4) {
-							a.Fire[la] = false
-						} else {
-							a.Fire[la] = ch < full+hold-0.25
-						}
-					}
-				}
-			} else if ch > 0.2 {
-				a.Fire[la] = false // let go (out of range / shorted)
-			}
-		}
-		if gi >= 0 {
-			gw := me.Weapons[gi]
-			yaw, pitch, hd := b.lead(me, tgt, spd)
-			if !set || (!laserAim && li < 0) {
-				a.Aim = [2]float64{yaw, pitch}
-				set = true
-			}
-			if clear && hd < rng*0.97 && gw.Reload <= 0.1 && (gw.Ammo > 0 || gw.Reload > 0) {
-				tol := 2.2
-				if tgt.Kind != "mech" {
-					tol = 1.2
-				}
-				if aligned(me, yaw, pitch, hd, tol) {
-					a.Fire[gi] = true
-				}
-			}
-			if gw.Ammo <= 0 && gw.Reload <= 0 {
-				a.Reload = true
-			}
-		}
-		if !set {
-			a.Aim = [2]float64{math.Atan2(tgt.Pos[1]-y, tgt.Pos[0]-x), 0}
-		}
+		a.Aim, a.Fire = b.shoot(me, tgt, gi, la, li, mo, t)
 	} else {
 		// no target: loot / zone / roam
 		bestD := 1e9
@@ -520,7 +384,7 @@ func (b *Bot) act(o *Obs) Action {
 		a.Aim = [2]float64{wrap(me.Aim[0] + 0.5), 0}
 		if gi >= 0 {
 			gw := me.Weapons[gi]
-			if gw.Ammo < 6 && gw.Reload <= 0 {
+			if gw.Ammo <= 5 && gw.Reload <= 0 {
 				a.Reload = true
 			}
 		}
@@ -684,7 +548,7 @@ func main() {
 		out.WriteByte('\n')
 		out.Flush()
 	}
-	bot := &Bot{strafe: 1, hitFrom: map[int]float64{}}
+	bot := &Bot{strafe: 1, hitFrom: map[int]float64{}, hitIDs: map[int]bool{}}
 	for l := range lines {
 		// skip to newest obs
 	drain:
