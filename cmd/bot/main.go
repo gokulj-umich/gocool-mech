@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"sync"
+	"time"
 )
 
 type WStats struct {
@@ -117,6 +119,65 @@ type Bot struct {
 	strafeUntil float64
 	shorted     float64
 	lastCharge  float64
+	nav         *Nav
+	navMu       sync.Mutex
+	path        [][2]float64
+	pathT       float64
+	pathGX      float64
+	pathGY      float64
+	retreating  bool
+}
+
+// navDir: unit direction toward (gx,gy) using A* (fallback straight line).
+func (b *Bot) navDir(x, y, gx, gy, t float64) (float64, float64) {
+	b.navMu.Lock()
+	n := b.nav
+	b.navMu.Unlock()
+	if n == nil || !n.ok || hyp(gx-x, gy-y) < 12 {
+		return norm(gx-x, gy-y)
+	}
+	if b.path == nil || t-b.pathT > 0.7 || hyp(gx-b.pathGX, gy-b.pathGY) > 15 {
+		b.path = n.path(x, y, gx, gy, 12*time.Millisecond)
+		b.pathT, b.pathGX, b.pathGY = t, gx, gy
+	}
+	for _, w := range b.path {
+		if hyp(w[0]-x, w[1]-y) > 6 {
+			return norm(w[0]-x, w[1]-y)
+		}
+	}
+	return norm(gx-x, gy-y)
+}
+
+// retreatDir: best of 16 headings: far from threats, inside zone, walkable.
+func (b *Bot) retreatDir(x, y float64, thr []*Mech, zcx, zcy, zr float64) (float64, float64) {
+	b.navMu.Lock()
+	n := b.nav
+	b.navMu.Unlock()
+	bs, bx, by := -1e18, 0.0, 0.0
+	for k := 0; k < 16; k++ {
+		a := float64(k) * math.Pi / 8
+		dx, dy := math.Cos(a), math.Sin(a)
+		sc := 0.0
+		for _, d := range []float64{15, 35} {
+			px, py := x+dx*d, y+dy*d
+			for _, m := range thr {
+				sc += math.Min(hyp(px-m.Pos[0], py-m.Pos[1]), 200) * (d / 35)
+			}
+			if o := hyp(px-zcx, py-zcy) - (zr - 20); o > 0 {
+				sc -= o * 3
+			}
+			if n != nil && n.ok {
+				i, j := n.cell(px, py)
+				if !n.free(i, j) {
+					sc -= 150
+				}
+			}
+		}
+		if sc > bs {
+			bs, bx, by = sc, dx, dy
+		}
+	}
+	return bx, by
 }
 
 func (b *Bot) lead(me *Self, tgt *Mech, speed float64) (yaw, pitch, hd float64) {
@@ -403,7 +464,7 @@ func (b *Bot) act(o *Obs) Action {
 		if found && !outside {
 			moveX, moveY = norm(tx-x, ty-y)
 		} else {
-			moveX, moveY = norm(zcx-x, zcy-y)
+			moveX, moveY = b.navDir(x, y, zcx, zcy, t)
 			if zd < zr*0.35 {
 				moveX, moveY = 0, 0
 			}
@@ -429,7 +490,7 @@ func (b *Bot) act(o *Obs) Action {
 	}
 	// zone override
 	if outside {
-		zx, zy := norm(zcx-x, zcy-y)
+		zx, zy := b.navDir(x, y, zcx, zcy, t)
 		moveX, moveY = moveX*0.3+zx, moveY*0.3+zy
 		if me.Energy > 40 {
 			a.Boost = true
@@ -476,6 +537,33 @@ func (b *Bot) act(o *Obs) Action {
 				s = 1
 			}
 			moveX, moveY = -vy*s, vx*s
+		}
+	}
+	// retreat rule (bot_reference): <38% w/ threat or <50% w/ 2+; recover to 80%
+	var thr []*Mech
+	near40 := false
+	for i := range o.Mechs {
+		m := &o.Mechs[i]
+		if m.Kind != "mech" || m.HP <= 0 {
+			continue
+		}
+		d := hyp(m.Pos[0]-x, m.Pos[1]-y)
+		if d < 160 {
+			thr = append(thr, m)
+		}
+		if d < 40 {
+			near40 = true
+		}
+	}
+	if hpf >= 0.8 || len(thr) == 0 && hpf >= 0.5 {
+		b.retreating = false
+	} else if len(thr) > 0 && (hpf < 0.38 || hpf < 0.5 && len(thr) >= 2) {
+		b.retreating = true
+	}
+	if b.retreating && !near40 && len(thr) > 0 {
+		moveX, moveY = b.retreatDir(x, y, thr, zcx, zcy, zr)
+		if outside && me.Energy > 40 {
+			a.Boost = true
 		}
 	}
 	mx, my := norm(moveX, moveY)
@@ -543,6 +631,20 @@ func main() {
 		}
 		switch h.Type {
 		case "hello":
+			var hh struct {
+				Map struct {
+					Dir string `json:"dir"`
+				} `json:"map"`
+			}
+			json.Unmarshal(l, &hh)
+			if hh.Map.Dir != "" {
+				go func(d string) {
+					nv := loadNav(d)
+					bot.navMu.Lock()
+					bot.nav = nv
+					bot.navMu.Unlock()
+				}(hh.Map.Dir)
+			}
 			send(map[string]string{"type": "ready", "name": "gocool-go-F"})
 		case "obs":
 			var o Obs
