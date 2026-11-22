@@ -423,6 +423,25 @@ func (b *Bot) act(o *Obs) Action {
 		moveX = ax*radial + -ry*b.strafe*0.9
 		moveY = ay*radial + rx*b.strafe*0.9
 
+		// cube-grab: visible cube close by, move to it while still aiming/firing
+		if hpf > 0.3 {
+			cd := 1e9
+			var cx, cy float64
+			for i := range o.Cubes {
+				c := &o.Cubes[i]
+				dd := hyp(c.Pos[0]-x, c.Pos[1]-y)
+				if dd < 100 && dd < cd && math.Abs(c.Pos[2]-me.Pos[2]) < 6 && hyp(c.Pos[0]-zcx, c.Pos[1]-zcy) < zr-10 {
+					cd, cx, cy = dd, c.Pos[0], c.Pos[1]
+				}
+			}
+			if cd < 100 {
+				moveX, moveY = b.steer(x, y, cx, cy, t)
+				if cd > 12 && me.Energy > 30 {
+					a.Boost = true
+				}
+			}
+		}
+
 		// shoot
 		spd := 252.0
 		rng := 230.0
