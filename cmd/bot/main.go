@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"math"
+	"math/rand"
 	"os"
 	"time"
 )
@@ -92,6 +93,17 @@ type Obs struct {
 	Events  []Event `json:"events"`
 	Zone    *Zone   `json:"zone"`
 	Offer   *Offer  `json:"offer"`
+	Sounds  []Sound `json:"sounds"`
+}
+
+type Sound struct {
+	Kind    string  `json:"kind"`
+	Bearing float64 `json:"bearing"`
+	Dist    string  `json:"dist"`
+}
+
+type ghostT struct {
+	x, y, t float64
 }
 
 type Action struct {
@@ -140,6 +152,14 @@ type Bot struct {
 	retreating  bool
 	hitFrom     map[int]float64
 	curTid      int
+	ghosts      map[int]ghostT
+	heardB      float64
+	heardD      float64
+	heardT      float64
+	roamX       float64
+	roamY       float64
+	roamUntil   float64
+	roamSet     bool
 }
 
 // retreatDir: best of 16 headings: far from threats, inside zone, walkable.
@@ -241,6 +261,32 @@ func (b *Bot) act(o *Obs) Action {
 		}
 		if e.Type == "damaged" && e.By != 0 {
 			b.hitFrom[e.By] = t
+		}
+	}
+	if b.ghosts == nil {
+		b.ghosts = map[int]ghostT{}
+	}
+	for i := range o.Mechs {
+		m := &o.Mechs[i]
+		if m.Kind == "mech" && m.HP > 0 {
+			b.ghosts[m.ID] = ghostT{m.Pos[0], m.Pos[1], t}
+		}
+	}
+	for _, sn := range o.Sounds {
+		switch sn.Kind {
+		case "gun", "laser", "laser_charge", "lightning", "step", "boost", "reload", "jet", "mortar":
+		default:
+			continue
+		}
+		if sn.Dist != "near" && sn.Dist != "mid" {
+			continue
+		}
+		dm := 35.0
+		if sn.Dist == "mid" {
+			dm = 105.0
+		}
+		if b.heardT == 0 || dm <= b.heardD || t-b.heardT > 2.0 {
+			b.heardB, b.heardD, b.heardT = sn.Bearing, dm, t
 		}
 	}
 	// upgrade
@@ -514,6 +560,60 @@ func (b *Bot) act(o *Obs) Action {
 			moveX, moveY = b.steer(x, y, zcx, zcy, t)
 			if zd < zr*0.35 {
 				moveX, moveY = 0, 0
+			}
+			if hpf > 0.6 && !outside {
+				inZone := func(px, py float64) bool { return hyp(px-zcx, py-zcy) < zr-10 }
+				done := false
+				// (1) ghost tracks, most recent first
+				var bg *ghostT
+				for id, g := range b.ghosts {
+					g := g
+					if t-g.t > 12 {
+						delete(b.ghosts, id)
+						continue
+					}
+					if hyp(g.x-x, g.y-y) < 8 {
+						delete(b.ghosts, id)
+						continue
+					}
+					if inZone(g.x, g.y) && (bg == nil || g.t > bg.t) {
+						bg = &g
+					}
+				}
+				if bg != nil {
+					moveX, moveY = b.steer(x, y, bg.x, bg.y, t)
+					done = true
+				}
+				// (2) heard sound
+				if !done && b.heardT > 0 && t-b.heardT < 3.0 {
+					gx, gy := x+math.Cos(b.heardB)*b.heardD, y+math.Sin(b.heardB)*b.heardD
+					if inZone(gx, gy) {
+						moveX, moveY = b.steer(x, y, gx, gy, t)
+						done = true
+					}
+				}
+				// (3) roam inside next zone circle
+				if !done {
+					if !b.roamSet || t >= b.roamUntil || hyp(b.roamX-x, b.roamY-y) < 15 {
+						bs, bx, by := 1e18, zcx, zcy
+						for k := 0; k < 10; k++ {
+							ang := (rand.Float64()*2 - 1) * math.Pi
+							rr := (0.15 + 0.6*rand.Float64()) * math.Max(zr, 20)
+							px, py := zcx+math.Cos(ang)*rr, zcy+math.Sin(ang)*rr
+							if b.nav != nil && b.nav.ok {
+								i, j := b.nav.cell(px, py)
+								if !b.nav.free(i, j) {
+									continue
+								}
+							}
+							if sc := math.Abs(hyp(px-x, py-y) - 120); sc < bs {
+								bs, bx, by = sc, px, py
+							}
+						}
+						b.roamX, b.roamY, b.roamUntil, b.roamSet = bx, by, t+25, true
+					}
+					moveX, moveY = b.steer(x, y, b.roamX, b.roamY, t)
+				}
 			}
 		}
 		// idle sweep
