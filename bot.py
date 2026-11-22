@@ -297,6 +297,8 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
           "reactive": False,                       # only engage mechs that are close (<60), hit us, close in, are hurt, or aim at us
           "react_r": 60.0,                       # fight spot choice: penalty per other enemy that can see the spot
           })
+# v36 defaults: best sim knobs on top of v33b (giddy-style retreat 38% -> recover 80%, lethal laser release, armor-first upgrades)
+P.update({"retreat_hp": 0.38, "recover_hp": 0.8, "lethal_laser": True, "upg": "armor"})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
     import json as _json
