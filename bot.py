@@ -323,6 +323,9 @@ P.update({"retreat_hp_multi": 0.5, "lose_rule": False, "fight_expo": 30.0, "stra
 # v42: top-team real-proven ideas on top of v41 (4.60): Xero solo duel (real +0.19), heal to 80% after a retreat
 # (sim +0.01 on r14), r41 extras (sim +0.57 search): retreat when hit at 45%, avoid idle mechs within 80 m, laser 130 m
 P.update({"solo_duel": True, "solo_hp": 0.25, "recover_hp": 0.8, "retreat_hp": 0.45, "avoid_r": 80.0, "want_laser": 130.0})
+# v43: Lance "many:2" (break line of sight when 2 enemies watch us; his practice sim +0.35..+0.50), Xero wider avoidance
+# of idle mechs (his sim: 110 -> 200 helped; we go 80 -> 150)
+P.update({"converge_n": 2, "avoid_r": 150.0})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
     import json as _json
