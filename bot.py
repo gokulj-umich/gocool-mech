@@ -342,6 +342,9 @@ UPG_ARMOR = ["plating", "armor", "laser_damage", "laser_charge", "nanites", "gun
 # valuation ranks it top) then plating / armor / laser
 UPG_ARMOR[:] = ["nanites", "plating", "armor", "laser_damage", "laser_charge"] + [u for u in UPG_ARMOR if u not in
               ("nanites", "plating", "armor", "laser_damage", "laser_charge")]
+# v46 (giddy's practice core, probe): engage only mechs that are close (<60 m), hit us in the last 6 s, close in,
+# are hurt (<40% within 160 m) or aim at us (<190 m); with nothing to do, stand still (silent) instead of roaming
+P.update({"reactive": True, "react_r": 60.0, "idle_still": True, "idle_still_hp": 0.0, "assassin": False})
 WEAPON_RANK = {"lightning": 3.0, "laser": 2.6, "mortar": 1.0, "gun": 0.0}
 if P["laser_first"]:
     WEAPON_RANK["laser"] = 4.0
