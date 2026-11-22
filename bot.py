@@ -297,6 +297,7 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
           "reactive": False,                       # only engage mechs that are close (<60), hit us, close in, are hurt, or aim at us
           "react_r": 60.0,
           "regen": False, "regen_hp": 0.8, "regen_to": 0.95, "regen_fin": 0.3,   # break LOS, hold fire, regen to full
+          "fight_spot": False, "spot_expo": 30.0, "spot_los": 45.0, "spot_duck": True,  # v37 fight core: score nearby spots
           "idle_still": False,                     # nothing to do: stand still where we are (giddy waits ~50% of its life)
           "idle_still_hp": 0.0,                    # ...only while hp >= this (0 = always)                       # fight spot choice: penalty per other enemy that can see the spot
           })
@@ -348,6 +349,7 @@ class Bot:
         self.gang_until = -99.0
         self.cur_threats = []
         self.cur_enemies = []
+        self.cur_cubes = []
         self.scan_phase = random.random() * TAU
         self.hide_goal = None
         self.hide_key = None
@@ -605,6 +607,7 @@ class Bot:
             e["_d"] = d2(e["pos"], pos)
         enemies.sort(key=lambda e: e["_d"])
         self.cur_enemies = enemies
+        self.cur_cubes = obs.get("cubes", []) or []
         for e in enemies:
             self.tracks[e["id"]] = {"pos": list(e["pos"]), "vel": list(e["vel"]), "t": t, "hp": e.get("hp", 1400),
                                     "max_hp": e.get("max_hp", 1400), "weapons": e.get("weapons", []), "cubes": e.get("cubes", 0)}
@@ -1241,6 +1244,57 @@ class Bot:
             aim = [yaw, 0.0]
         return aim, fire
 
+    def spot_vector(self, me, tgt, slots, weps, want, sx, sy):
+        """v37: pick the best nearby spot: range, line of fire when ready / cover when not, few other watchers, cubes."""
+        w = self.w
+        x, y, z = me["pos"]
+        tx, ty, tz = tgt["pos"]
+        mh = me.get("stats", {}).get("muzzle_height", 3.6)
+        tc = (tx, ty, tz + 3.0)
+        ready = True
+        if P["spot_duck"]:
+            gi, la, li = slots.get("gun"), slots.get("laser"), slots.get("lightning")
+            g_ok = gi is not None and weps[gi].get("ammo", 1) > 0 and weps[gi].get("reload", 0) <= 0.25
+            l_ok = la is not None and weps[la].get("cooldown", 0) <= 0.3
+            z_ok = li is not None and tgt["_d"] < 50 and me["energy"] > 15
+            ready = g_ok or l_ok or z_ok
+        want_los = 1.0 if ready else -1.0
+        others = [e for e in self.cur_enemies if e.get("id") != tgt.get("id") and e.get("_d", 999) < 170][:4]
+        cube = None
+        for c in self.cur_cubes:
+            dc = d2(c["pos"], (x, y))
+            if dc < 40 and (cube is None or dc < cube[2]):
+                cube = (c["pos"][0], c["pos"][1], dc)
+        best, bv = None, None
+        cands = [(0.0, 0.0, 0.0)] + [(math.cos(k * math.pi / 8), math.sin(k * math.pi / 8), 6.0) for k in range(16)] + \
+                [(math.cos(k * math.pi / 4 + 0.39), math.sin(k * math.pi / 4 + 0.39), 12.0) for k in range(8)]
+        for dx, dy, r in cands:
+            cx, cy = x + dx * r, y + dy * r
+            if r > 0 and (not w.walkable(cx, cy) or not w.clear_line((x, y), (cx, cy))):
+                continue
+            gz = w.ground(cx, cy) if r > 0 else z
+            s_ = -1.1 * abs(math.hypot(tx - cx, ty - cy) - want) - r * 0.4
+            los = w.los((cx, cy, gz + mh), tc)
+            if los:
+                s_ += P["spot_los"] * want_los
+            body = (cx, cy, gz + 3.0)
+            for e in others:
+                if w.los((e["pos"][0], e["pos"][1], e["pos"][2] + 5.0), body):
+                    s_ -= P["spot_expo"]
+            if cube is not None:
+                s_ += 1.5 * (cube[2] - math.hypot(cube[0] - cx, cube[1] - cy))
+            if want_los > 0:
+                s_ += 9.0 * (dx * sx + dy * sy)
+            if r == 0:
+                s_ -= 8.0
+                if want_los < 0 and not los:
+                    s_ += 14.0
+            if best is None or s_ > best:
+                best, bv = s_, (dx, dy)
+        if bv is None:
+            return None
+        return [bv[0], bv[1]]
+
     def fight_vector(self, me, tgt, slots, weps, circle, want=None):
         x, y = me["pos"][0], me["pos"][1]
         tx, ty = tgt["pos"][0], tgt["pos"][1]
@@ -1285,7 +1339,11 @@ class Bot:
         radial = max(-1.0, min(1.0, (d - want) / 30.0))
         mvx = px * self.strafe_dir * 0.9 + rx * radial * 0.7
         mvy = py * self.strafe_dir * 0.9 + ry * radial * 0.7
-        if P["fight_expo"] > 0 and tgt.get("kind") == "mech":
+        if P["fight_spot"] and tgt.get("kind") == "mech":
+            v = self.spot_vector(me, tgt, slots, weps, want, px * self.strafe_dir, py * self.strafe_dir)
+            if v is not None:
+                mvx, mvy = v
+        elif P["fight_expo"] > 0 and tgt.get("kind") == "mech":
             others = [e for e in self.cur_enemies if e.get("id") != tgt.get("id") and e.get("_d", 999) < 170]
             if others:
                 best_s, best_v = None, None
