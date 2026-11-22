@@ -293,7 +293,9 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
           "upg": "base",                           # "armor": plating, armor, laser_damage, laser_charge, nanites, gun...
           "lose_rule": False,                      # retreat when 2 near & hp<.55, 3 near & hp<.8, or losing the trade
           "lethal_laser": False,                   # release a partial laser charge when it kills
-          "fight_expo": 0.0,                       # fight spot choice: penalty per other enemy that can see the spot
+          "fight_expo": 0.0,
+          "reactive": False,                       # only engage mechs that are close (<60), hit us, close in, are hurt, or aim at us
+          "react_r": 60.0,                       # fight spot choice: penalty per other enemy that can see the spot
           })
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
@@ -335,7 +337,8 @@ class Bot:
         self.threat_bearing = None
         self.threat_t = -99.0
         self.last_damage_t = -99.0
-        self.hits_by = []         # v19: (t, attacker id) for recent damage
+        self.hits_by = []
+        self.hit_from = {}         # v19: (t, attacker id) for recent damage
         self.gang_until = -99.0
         self.cur_threats = []
         self.cur_enemies = []
@@ -557,6 +560,7 @@ class Bot:
                     self.last_damage_t = t
                     if ev.get("by") is not None and ev["by"] < 100:   # mechs only, not drones
                         self.hits_by.append((t, ev["by"]))
+                        self.hit_from[ev["by"]] = t
                     if ev.get("bearing") is not None:
                         self.threat_bearing = ev["bearing"]
                         self.threat_t = t
@@ -656,6 +660,16 @@ class Bot:
                 continue
             if P["passive"] and e["_d"] > P["close_r"] and not recently_hit:
                 continue
+            if P["reactive"]:
+                b_e2me_ = math.atan2(y - e["pos"][1], x - e["pos"][0])
+                aimed_ = abs(wrap(e["aim"][0] - b_e2me_)) < 0.22
+                rx__, ry__ = x - e["pos"][0], y - e["pos"][1]
+                closing_ = (e["vel"][0] * rx__ + e["vel"][1] * ry__) / max(e["_d"], 1.0)
+                ehp_ = e.get("hp", 1400) / max(e.get("max_hp", 1400), 1)
+                if not (e["_d"] < P["react_r"] or t - self.hit_from.get(e["id"], -99.0) < 6.0
+                        or (closing_ > 3 and e["_d"] < 180) or (ehp_ < 0.4 and e["_d"] < 160)
+                        or (aimed_ and e["_d"] < 190) or e["id"] == self.cur_tid):
+                    continue
             ez = e["pos"][2] + 4.5
             vis = w.los(muzzle, (e["pos"][0], e["pos"][1], ez))
             e["_los"] = vis
