@@ -295,7 +295,9 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
           "lethal_laser": False,                   # release a partial laser charge when it kills
           "fight_expo": 0.0,
           "reactive": False,                       # only engage mechs that are close (<60), hit us, close in, are hurt, or aim at us
-          "react_r": 60.0,                       # fight spot choice: penalty per other enemy that can see the spot
+          "react_r": 60.0,
+          "idle_still": False,                     # nothing to do: stand still where we are (giddy waits ~50% of its life)
+          "idle_still_hp": 0.0,                    # ...only while hp >= this (0 = always)                       # fight spot choice: penalty per other enemy that can see the spot
           })
 # v36 defaults: best sim knobs on top of v33b (giddy-style retreat 38% -> recover 80%, lethal laser release, armor-first upgrades)
 P.update({"retreat_hp": 0.38, "recover_hp": 0.8, "lethal_laser": True, "upg": "armor"})
@@ -1002,6 +1004,9 @@ class Bot:
             label = "roam"
             rp = self.roam_point(obs, circle, t)
             move = self.go_to(me, self.zone_plan, rp, t)
+        elif P["idle_still"] and hp_frac >= P["idle_still_hp"] and (zgoal is None or not urgent_zone):
+            label = "wait"
+            move = [0.0, 0.0]
         else:
             hide = self.pick_hide(obs, circle)
             dd = d2(hide, pos)
