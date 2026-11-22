@@ -296,6 +296,8 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
           "fight_expo": 0.0,
           "cover_retreat": False,                  # v38: retreat = go to nearest spot hidden from threats and hold; none -> fight
           "cover_max": 60.0, "cornered_fight": True,
+          "avoid_r": 0.0,                          # v38 (Xero idea): when not fighting, steer away from known mechs within this
+          "avoid_w": 1.2, "avoid_loot": 60.0,
           "econ": False,                           # v38: remember crates/drones/cubes, walk to best value/(d+18)
           "econ_r": 260.0, "econ_npc_hp": 0.6, "econ_boost": False, "econ_give_up": 30.0,
           "econ_v_cube": 110.0, "econ_v_crate": 105.0, "econ_v_npc": 170.0,
@@ -832,6 +834,8 @@ class Bot:
                     return
                 if not zone_ok(p_[0], p_[1]) or p_[2] - w.ground(p_[0], p_[1]) > 3.2:
                     return
+                if P["avoid_r"] > 0 and kind != "cube" and any(d2(e["pos"], p_) < P["avoid_loot"] for e in enemies):
+                    return
                 u_ = v_ / (dd_ + 18.0) * (1.35 if i_ == self.loot_id else 1.0)
                 if u_ > bu_:
                     bu_, best_ = u_, (kind, i_, p_, dd_)
@@ -1153,6 +1157,19 @@ class Bot:
                 if P["hide_shuffle"]:
                     ph = t * 0.9 + self.scan_phase
                     move = [0.4 * math.cos(ph), 0.4 * math.sin(ph)]
+
+        if P["avoid_r"] > 0 and not (urgent_zone and zgoal is not None) and not label.startswith(("fight", "retreat", "zone")):
+            ax_, ay_ = 0.0, 0.0
+            for e in enemies:
+                if e["_d"] < P["avoid_r"]:
+                    k_ = (P["avoid_r"] - e["_d"]) / P["avoid_r"]
+                    ax_ += (x - e["pos"][0]) / max(e["_d"], 1.0) * k_
+                    ay_ += (y - e["pos"][1]) / max(e["_d"], 1.0) * k_
+            if ax_ or ay_:
+                nx_, ny_ = move[0] + ax_ * P["avoid_w"], move[1] + ay_ * P["avoid_w"]
+                if zone_ok(x + nx_ * 10.0, y + ny_ * 10.0):
+                    n_ = math.hypot(nx_, ny_) or 1.0
+                    move = [nx_ / n_, ny_ / n_]
 
         # ---- stealth: move quietly (< step_speed) unless running from the zone or from fire
         if P["stealth"] and not (urgent_zone and zgoal is not None):
