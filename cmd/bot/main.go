@@ -151,6 +151,7 @@ type Bot struct {
 	pathGy      float64
 	retreating  bool
 	hitFrom     map[int]float64
+	lastDmg     float64
 	curTid      int
 	ghosts      map[int]ghostT
 	heardB      float64
@@ -259,6 +260,9 @@ func (b *Bot) act(o *Obs) Action {
 		if e.Type == "effect" && e.Effect == "short" {
 			b.shorted = t + 2.0
 		}
+		if e.Type == "damaged" {
+			b.lastDmg = t
+		}
 		if e.Type == "damaged" && e.By != 0 {
 			b.hitFrom[e.By] = t
 		}
@@ -326,6 +330,7 @@ func (b *Bot) act(o *Obs) Action {
 	x, y := me.Pos[0], me.Pos[1]
 	var tgt *Mech
 	td := 1e9
+	recentlyHit := b.lastDmg > 0 && t-b.lastDmg < 3.0
 	myMax := math.Max(me.MaxHP, 1400)
 	for i := range o.Mechs {
 		m := &o.Mechs[i]
@@ -346,6 +351,9 @@ func (b *Bot) act(o *Obs) Action {
 		hf, hit := b.hitFrom[m.ID]
 		threat := hit && t-hf < 6.0 ||
 			math.Abs(wrap(m.Aim[0]-bear)) < 0.22 && (closing > 1 || d < 120) || d < 45
+		if m.Kind == "mech" && recentlyHit && d < 120 {
+			sc -= 60
+		}
 		if m.Kind == "mech" {
 			if threat {
 				sc -= 90
@@ -422,6 +430,25 @@ func (b *Bot) act(o *Obs) Action {
 		}
 		moveX = ax*radial + -ry*b.strafe*0.9
 		moveY = ay*radial + rx*b.strafe*0.9
+
+		// cube-grab: visible cube close by, move to it while still aiming/firing
+		if hpf > 0.3 {
+			cd := 1e9
+			var cx, cy float64
+			for i := range o.Cubes {
+				c := &o.Cubes[i]
+				dd := hyp(c.Pos[0]-x, c.Pos[1]-y)
+				if dd < 100 && dd < cd && math.Abs(c.Pos[2]-me.Pos[2]) < 6 && hyp(c.Pos[0]-zcx, c.Pos[1]-zcy) < zr-10 {
+					cd, cx, cy = dd, c.Pos[0], c.Pos[1]
+				}
+			}
+			if cd < 100 {
+				moveX, moveY = b.steer(x, y, cx, cy, t)
+				if cd > 12 && me.Energy > 30 {
+					a.Boost = true
+				}
+			}
+		}
 
 		// shoot
 		spd := 252.0
@@ -725,12 +752,16 @@ func (b *Bot) act(o *Obs) Action {
 	// retreat rule: <38% w/ threat or <50% w/ 2+; recover to 80%
 	var thr []*Mech
 	near40 := false
+	n200 := 0
 	for i := range o.Mechs {
 		m := &o.Mechs[i]
 		if m.Kind != "mech" || m.HP <= 0 {
 			continue
 		}
 		d := hyp(m.Pos[0]-x, m.Pos[1]-y)
+		if d < 200 {
+			n200++
+		}
 		if d < 160 {
 			thr = append(thr, m)
 		}
@@ -738,12 +769,27 @@ func (b *Bot) act(o *Obs) Action {
 			near40 = true
 		}
 	}
+	rh := 0.38
+	if len(thr) <= 1 && n200 <= 1 {
+		rh = math.Min(rh, 0.15) // solo duel: fight a lone hunter
+	}
 	if hpf >= 0.8 || len(thr) == 0 && hpf >= 0.5 {
 		b.retreating = false
-	} else if len(thr) > 0 && (hpf < 0.38 || hpf < 0.5 && len(thr) >= 2) {
+	} else if len(thr) > 0 && (hpf < rh || hpf < 0.5 && len(thr) >= 2) {
 		b.retreating = true
 	}
-	if b.retreating && !near40 && len(thr) > 0 {
+	converging := false
+	eyes := 0
+	for _, m := range thr {
+		dd := hyp(m.Pos[0]-x, m.Pos[1]-y)
+		if dd < 150 && math.Abs(wrap(m.Aim[0]-math.Atan2(y-m.Pos[1], x-m.Pos[0]))) < 0.35 {
+			eyes++
+		}
+	}
+	if eyes >= 4 {
+		converging = true
+	}
+	if (b.retreating || converging) && !near40 && len(thr) > 0 {
 		moveX, moveY = b.retreatDir(x, y, thr, zcx, zcy, zr)
 		if outside && me.Energy > 40 {
 			a.Boost = true
