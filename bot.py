@@ -345,6 +345,8 @@ UPG_ARMOR = ["plating", "armor", "laser_damage", "laser_charge", "nanites", "gun
 # valuation ranks it top) then plating / armor / laser
 UPG_ARMOR[:] = ["nanites", "plating", "armor", "laser_damage", "laser_charge"] + [u for u in UPG_ARMOR if u not in
               ("nanites", "plating", "armor", "laser_damage", "laser_charge")]
+# v48: giddy-inspired finish rush (close to 20 m on targets under 38% HP) + retreat when outgunned by a laser
+P.update({"press_r": 20.0, "press_hp": 0.38, "g_outgun": True})
 WEAPON_RANK = {"lightning": 3.0, "laser": 2.6, "mortar": 1.0, "gun": 0.0}
 if P["laser_first"]:
     WEAPON_RANK["laser"] = 4.0
