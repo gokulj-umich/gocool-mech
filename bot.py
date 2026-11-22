@@ -342,6 +342,9 @@ UPG_ARMOR = ["plating", "armor", "laser_damage", "laser_charge", "nanites", "gun
 # valuation ranks it top) then plating / armor / laser
 UPG_ARMOR[:] = ["nanites", "plating", "armor", "laser_damage", "laser_charge"] + [u for u in UPG_ARMOR if u not in
               ("nanites", "plating", "armor", "laser_damage", "laser_charge")]
+# v50: calibrated-sim search pick t14 (s2 sim +0.30 vs v45 on 300 fresh seeds): tighter finish trigger, retreat at 38% when hit,
+# laser fights at 110 m, no idle avoidance, hunt lasers within 400 m
+P.update({"press_gap": 0.15, "retreat_hp": 0.38, "solo_hp": 0.25, "want_laser": 110.0, "avoid_r": 0.0, "laser_hunt_r": 400.0})
 WEAPON_RANK = {"lightning": 3.0, "laser": 2.6, "mortar": 1.0, "gun": 0.0}
 if P["laser_first"]:
     WEAPON_RANK["laser"] = 4.0
