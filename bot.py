@@ -301,6 +301,9 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
           "stick": 0.0,                            # v38: score bonus for the current target (stop target thrashing)
           "stick_hurt": 0.0,                       # extra bonus per missing HP fraction of the target
           "solo_duel": False, "solo_hp": 0.25,
+          "avoid_sounds": False,                   # v44 (Xero): footsteps/gunfire heard near (<60 m) count as mechs to steer away from
+          "cube_safe": False,                      # v44 (Juan cubex): mid-fight cube grab only when exposure (eta x incoming DPS) < value
+          "cube_safe_r": 100.0,
           "econ": False,                           # v38: remember crates/drones/cubes, walk to best value/(d+18)
           "econ_r": 260.0, "econ_npc_hp": 0.6, "econ_boost": False, "econ_give_up": 30.0,
           "econ_v_cube": 110.0, "econ_v_crate": 105.0, "econ_v_npc": 170.0,
@@ -326,6 +329,9 @@ P.update({"solo_duel": True, "solo_hp": 0.25, "recover_hp": 0.8, "retreat_hp": 0
 # v43: Lance "many:2" (break line of sight when 2 enemies watch us; his practice sim +0.35..+0.50), Xero wider avoidance
 # of idle mechs (his sim: 110 -> 200 helped; we go 80 -> 150)
 P.update({"converge_n": 2, "avoid_r": 150.0})
+# v44: Xero avoid_sounds (near footsteps/gunfire count as mechs to avoid) + Juan cubex (mid-fight cube grab within
+# 100 m when expected HP lost on the way < cube value: 90 HP, +150 when it unlocks an upgrade; real +0.1 for Juan)
+P.update({"avoid_sounds": True, "cube_safe": True})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
     import json as _json
@@ -386,6 +392,8 @@ class Bot:
         self.scan_start = None
         self.peek = None          # (x, y, target_id, until_t)
         self.heard = None         # (bearing, dist_m, t)
+        self.snd_near = []        # v44: [(bearing, dist_m, t)] recent near sounds
+        self.dmg_log = []         # v44: [(t, amount)] damage taken
         self.tracks = {}          # enemy id -> dict(pos, vel, t, hp, max_hp, weapons)
         self.laser_fired = {}     # v17: enemy id -> time we last saw its laser fire (beam or charge ending)
         self.was_charging = {}
@@ -591,6 +599,7 @@ class Bot:
         for ev in obs.get("events", []):
             et = ev.get("type")
             if et == "damaged":
+                self.dmg_log.append((t, ev.get("amount", 0) or 0))
                 if ev.get("weapon") != "zone":
                     self.last_damage_t = t
                     if ev.get("by") is not None and ev["by"] < 100:   # mechs only, not drones
@@ -625,6 +634,8 @@ class Bot:
                 P["assassin"] = False
                 P["ghost_hunt"] = False
         for snd in obs.get("sounds", []):
+            if P["avoid_sounds"] and snd["kind"] in ("gun", "laser", "laser_charge", "lightning", "step", "boost", "mortar") and snd["dist"] == "near":
+                self.snd_near.append((snd["bearing"], 40.0, t - snd.get("age", 0.0)))
             if snd["kind"] in ("gun", "laser", "laser_charge", "lightning", "step", "boost", "reload", "jet", "mortar") and snd["dist"] in ("near", "mid"):
                 dm = 35.0 if snd["dist"] == "near" else 105.0
                 if self.heard is None or dm <= self.heard[1] or t - self.heard[2] > 2.0:
@@ -1024,8 +1035,9 @@ class Bot:
                 if d2(hide, pos) > 3.0:
                     move = self.go_to(me, self.zone_plan, hide, t)
                     speed_scale = 0.4
-        elif (P["cube_fight_r"] > 0 and cube_goal is not None and cube_goal[2] < P["cube_fight_r"]
-              and hp_frac > P["cube_fight_hp"]):
+        elif (P["cube_fight_r"] > 0 and cube_goal is not None
+              and ((not P["cube_safe"] and cube_goal[2] < P["cube_fight_r"] and hp_frac > P["cube_fight_hp"])
+                   or (P["cube_safe"] and cube_goal[2] < P["cube_safe_r"] and self.cube_ok(me, cube_goal, t)))):
             label = "cube-grab"
             move = self.go_to(me, self.local_plan, (cube_goal[0], cube_goal[1]), t)
             boost = cube_goal[2] > 12 and me["energy"] > 30
@@ -1183,6 +1195,16 @@ class Bot:
                     k_ = (P["avoid_r"] - e["_d"]) / P["avoid_r"]
                     ax_ += (x - e["pos"][0]) / max(e["_d"], 1.0) * k_
                     ay_ += (y - e["pos"][1]) / max(e["_d"], 1.0) * k_
+            if P["avoid_sounds"]:
+                self.snd_near = [sn for sn in self.snd_near if t - sn[2] < 3.0]
+                for b_, dm_, _ in self.snd_near:
+                    sx_, sy_ = x + math.cos(b_) * dm_, y + math.sin(b_) * dm_
+                    if any(d2(e["pos"], (sx_, sy_)) < 30 for e in enemies):
+                        continue
+                    k_ = (P["avoid_r"] - dm_) / P["avoid_r"]
+                    if k_ > 0:
+                        ax_ -= math.cos(b_) * k_
+                        ay_ -= math.sin(b_) * k_
             if ax_ or ay_:
                 nx_, ny_ = move[0] + ax_ * P["avoid_w"], move[1] + ay_ * P["avoid_w"]
                 if zone_ok(x + nx_ * 10.0, y + ny_ * 10.0):
@@ -1718,6 +1740,16 @@ class Bot:
             return None
         self.peek = (best[1], best[2], tgt["id"], t + 1.0)
         return (best[1], best[2])
+
+    def cube_ok(self, me, cube_goal, t):
+        """v44: grab a cube when the HP we expect to lose getting it is worth less than the cube."""
+        self.dmg_log = [dl for dl in self.dmg_log if t - dl[0] < 4.0]
+        dps = sum(a for _, a in self.dmg_log) / 4.0
+        eta = cube_goal[2] / 10.0 + 0.5
+        cost = eta * dps
+        cubes = me.get("cubes", 0) or 0
+        value = 90.0 + (150.0 if cubes + 1 in (1, 3, 6, 10) else 0.0)
+        return cost < value and me["hp"] - cost > 0.25 * me["max_hp"]
 
     def cover_spot(self, me, threats, circle):
         x, y, z = me["pos"]
