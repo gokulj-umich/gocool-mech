@@ -300,6 +300,7 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
           "avoid_w": 1.2, "avoid_loot": 60.0,
           "stick": 0.0,                            # v38: score bonus for the current target (stop target thrashing)
           "stick_hurt": 0.0,                       # extra bonus per missing HP fraction of the target
+          "solo_duel": False, "solo_hp": 0.25,
           "econ": False,                           # v38: remember crates/drones/cubes, walk to best value/(d+18)
           "econ_r": 260.0, "econ_npc_hp": 0.6, "econ_boost": False, "econ_give_up": 30.0,
           "econ_v_cube": 110.0, "econ_v_crate": 105.0, "econ_v_npc": 170.0,
@@ -319,6 +320,9 @@ P.update({"retreat_hp": 0.38, "recover_hp": 0.8, "lethal_laser": True, "upg": "a
 P.update({"econ": True, "cube_fight_r": 70.0, "cube_fight_hp": 0.3, "threat_pri": 90.0})
 # v41 (random search r14, sim +0.61 on 150 seeds vs v38)
 P.update({"retreat_hp_multi": 0.5, "lose_rule": False, "fight_expo": 30.0, "strafe_min": 3.0, "strafe_max": 5.0, "want_gun": 100.0, "engage_r": 300.0, "smart_targets": False, "commit": False, "laser_grab_r": 60.0})
+# v42: top-team real-proven ideas on top of v41 (4.60): Xero solo duel (real +0.19), heal to 80% after a retreat
+# (sim +0.01 on r14), r41 extras (sim +0.57 search): retreat when hit at 45%, avoid idle mechs within 80 m, laser 130 m
+P.update({"solo_duel": True, "solo_hp": 0.25, "recover_hp": 0.8, "retreat_hp": 0.45, "avoid_r": 80.0, "want_laser": 130.0})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
     import json as _json
@@ -921,7 +925,10 @@ class Bot:
                 self.gang_until = t + P["gang_hold"]
             if t < self.gang_until and threats:
                 converging = True
-        losing = converging or (P["pacifist"] and bool(threats)) or (P["stealth"] and bool(threats) and target is None) or threats and (hp_frac < P["retreat_hp"] or (hp_frac < P["retreat_hp_multi"] and (n_threats >= 2 or strongest > my_hp * 1.3)))
+        rh_ = P["retreat_hp"]
+        if P["solo_duel"] and n_threats <= 1 and len([e for e in enemies if e["_d"] < 200]) <= 1:
+            rh_ = min(rh_, P["solo_hp"])          # Xero real A/B: lone hunter -> fight it out, retreat only below 25%
+        losing = converging or (P["pacifist"] and bool(threats)) or (P["stealth"] and bool(threats) and target is None) or threats and (hp_frac < rh_ or (hp_frac < P["retreat_hp_multi"] and (n_threats >= 2 or strongest > my_hp * 1.3)))
         if P["lose_rule"] and threats:
             near_n = sum(1 for e in enemies if e["_d"] < 160)
             lr = (near_n >= 2 and hp_frac < 0.55) or (near_n >= 3 and hp_frac < 0.8)
