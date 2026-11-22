@@ -294,6 +294,9 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
           "lose_rule": False,                      # retreat when 2 near & hp<.55, 3 near & hp<.8, or losing the trade
           "lethal_laser": False,                   # release a partial laser charge when it kills
           "fight_expo": 0.0,
+          "threat_pri": 0.0,                       # bonus for mechs actively hunting us (hit us / aimed+closing)
+          "pace_s": 0.0,                           # after a kill: no new non-threat targets for this long or until healed
+          "pace_hp": 0.9,
           "reactive": False,                       # only engage mechs that are close (<60), hit us, close in, are hurt, or aim at us
           "react_r": 60.0,
           "regen": False, "regen_hp": 0.8, "regen_to": 0.95, "regen_fin": 0.3,   # break LOS, hold fire, regen to full
@@ -368,6 +371,7 @@ class Bot:
         self.was_charging = {}
         self.pp = None            # power position: dict(roof, state, t0, climb)
         self.my_kills = 0
+        self.last_kill_t = -99.0
         self.hit_ids = set()      # mechs we have already damaged (no longer unaware)
         self.recovering = False
         self.cur_tid = None
@@ -576,6 +580,7 @@ class Bot:
                 self.hit_ids.add(ev["target"])
             elif et == "kill":
                 self.my_kills += 1
+                self.last_kill_t = t
                 if P["forget_dead"]:
                     kid = ev.get("target")          # v16: forget the corpse so we don't stalk/charge at it
                     self.tracks.pop(kid, None)
@@ -679,11 +684,24 @@ class Bot:
                         or (closing_ > 3 and e["_d"] < 180) or (ehp_ < 0.4 and e["_d"] < 160)
                         or (aimed_ and e["_d"] < 190) or e["id"] == self.cur_tid):
                     continue
+            if P["threat_pri"] or P["pace_s"]:
+                b_e2me_ = math.atan2(y - e["pos"][1], x - e["pos"][0])
+                rx__, ry__ = x - e["pos"][0], y - e["pos"][1]
+                closing_ = (e["vel"][0] * rx__ + e["vel"][1] * ry__) / max(e["_d"], 1.0)
+                threat_ = (t - self.hit_from.get(e["id"], -99.0) < 6.0
+                           or (abs(wrap(e["aim"][0] - b_e2me_)) < 0.22 and (closing_ > 1 or e["_d"] < 120))
+                           or e["_d"] < 45)
+                ehp_ = e.get("hp", 1400) / max(e.get("max_hp", 1400), 1)
+                if (P["pace_s"] and not threat_ and ehp_ > 0.4 and e["id"] != self.cur_tid
+                        and t - self.last_kill_t < P["pace_s"] and me["hp"] / max(me["max_hp"], 1) < P["pace_hp"]):
+                    continue
             ez = e["pos"][2] + 4.5
             vis = w.los(muzzle, (e["pos"][0], e["pos"][1], ez))
             e["_los"] = vis
             # cheapest point first: weight remaining HP heavily (a wounded bot is a near-free kill)
             sc = e["_d"] * 0.5 + (0 if vis else 120) + e.get("hp", 1400) * 0.08
+            if P["threat_pri"]:
+                sc += -P["threat_pri"] if threat_ else P["threat_pri"] * 0.5
             if P["smart_targets"]:
                 escorts = sum(1 for o in enemies if o is not e and d2(o["pos"], e["pos"]) < 50)
                 sc += escorts * 40.0                      # escorted targets are expensive
