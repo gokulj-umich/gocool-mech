@@ -160,6 +160,67 @@ type Bot struct {
 	roamY       float64
 	roamUntil   float64
 	roamSet     bool
+	knownPk     map[int]KPk
+}
+
+type KPk struct {
+	kind string
+	pos  [3]float64
+	t    float64
+}
+
+func (b *Bot) walkable(x, y float64) bool {
+	if b.nav == nil || !b.nav.ok {
+		return true
+	}
+	i, j := b.nav.cell(x, y)
+	return b.nav.free(i, j)
+}
+
+func (b *Bot) dodgeVector(o *Obs) (float64, float64, bool) {
+	me := &o.Self
+	x, y, z := me.Pos[0], me.Pos[1], me.Pos[2]
+	var bx, by float64
+	got := false
+	for i := range o.Mechs {
+		e := &o.Mechs[i]
+		d := hyp(x-e.Pos[0], y-e.Pos[1])
+		if e.Charging && d < 290 {
+			bear := math.Atan2(y-e.Pos[1], x-e.Pos[0])
+			if math.Abs(wrap(e.Aim[0]-bear)) < math.Atan2(6.0, math.Max(d, 1))+0.03 {
+				s := b.strafe
+				if s == 0 {
+					s = 1
+				}
+				bx, by, got = -math.Sin(bear)*s, math.Cos(bear)*s, true
+			}
+		}
+	}
+	for _, p := range o.Projs {
+		if p.Kind != "mortar" {
+			continue
+		}
+		g := 22.0
+		qa, qb, qc := -0.5*g, p.Vel[2], p.Pos[2]-z
+		disc := qb*qb - 4*qa*qc
+		if disc < 0 {
+			continue
+		}
+		tl := (-qb - math.Sqrt(disc)) / (2 * qa)
+		if tl < 0 || tl > 4 {
+			continue
+		}
+		lx, ly := p.Pos[0]+p.Vel[0]*tl, p.Pos[1]+p.Vel[1]*tl
+		if hyp(lx-x, ly-y) < 10 {
+			ax, ay := x-lx, y-ly
+			n := hyp(ax, ay)
+			if n == 0 {
+				n = 1
+			}
+			bx, by, got = ax/n, ay/n, true
+		}
+	}
+	return bx, by, got
 }
 
 // retreatDir: best of 16 headings: far from threats, inside zone, walkable.
@@ -359,7 +420,9 @@ func (b *Bot) act(o *Obs) Action {
 			td, tgt = sc, m
 		}
 	}
+	td2 := 0.0
 	if tgt != nil {
+		td2 = hyp(tgt.Pos[0]-x, tgt.Pos[1]-y)
 		b.curTid = tgt.ID
 	}
 	moveX, moveY := 0.0, 0.0
@@ -625,6 +688,40 @@ func (b *Bot) act(o *Obs) Action {
 			}
 		}
 	}
+	// known-pickup memory + get-laser
+	seen := map[int]bool{}
+	for i := range o.Pickups {
+		p := &o.Pickups[i]
+		b.knownPk[p.ID] = KPk{p.Kind, p.Pos, t}
+		seen[p.ID] = true
+	}
+	for id, k := range b.knownPk {
+		if !seen[id] && (hyp(k.pos[0]-x, k.pos[1]-y) < 38 || t-k.t > 90) {
+			delete(b.knownPk, id)
+		}
+	}
+	if la < 0 && !outside && !b.retreating {
+		lgd, lgx, lgy := 1e9, 0.0, 0.0
+		for _, k := range b.knownPk {
+			if k.kind != "laser" {
+				continue
+			}
+			dd := hyp(k.pos[0]-x, k.pos[1]-y)
+			if dd < 320 && math.Abs(k.pos[2]-b.nav.ground(k.pos[0], k.pos[1])) < 2.5 && b.walkable(k.pos[0], k.pos[1]) && dd < lgd {
+				lgd, lgx, lgy = dd, k.pos[0], k.pos[1]
+			}
+		}
+		minE := 999.0
+		for i := range o.Mechs {
+			if o.Mechs[i].Kind == "mech" && o.Mechs[i].HP > 0 {
+				minE = math.Min(minE, hyp(o.Mechs[i].Pos[0]-x, o.Mechs[i].Pos[1]-y))
+			}
+		}
+		if lgd < 1e8 && (tgt == nil || (td2 > 110 && lgd < 70)) && minE > 70 {
+			moveX, moveY = b.steer(x, y, lgx, lgy, t)
+			a.Boost = lgd > 20 && me.Energy > 30
+		}
+	}
 	// pickup take (WEAPON_RANK, laser first)
 	cur1 := ""
 	if len(me.Weapons) > 1 && me.Weapons[1] != nil {
@@ -661,47 +758,11 @@ func (b *Bot) act(o *Obs) Action {
 			a.Boost = true
 		}
 	}
-	// dodge charging lasers aimed at us
-	for i := range o.Mechs {
-		e := &o.Mechs[i]
-		if !e.Charging {
-			continue
-		}
-		d := hyp(x-e.Pos[0], y-e.Pos[1])
-		if d > 290 {
-			continue
-		}
-		bear := math.Atan2(y-e.Pos[1], x-e.Pos[0])
-		if math.Abs(wrap(e.Aim[0]-bear)) < math.Atan2(6, math.Max(d, 1))+0.03 {
-			s := b.strafe
-			if s == 0 {
-				s = 1
-			}
-			moveX, moveY = -math.Sin(bear)*s, math.Cos(bear)*s
-			if me.Energy > 30 {
-				a.Boost = true
-			}
-		}
-	}
-	// incoming projectiles: simple perpendicular sidestep
-	for _, p := range o.Projs {
-		rx, ry, rz := x-p.Pos[0], y-p.Pos[1], me.Pos[2]+4.5-p.Pos[2]
-		vv := p.Vel[0]*p.Vel[0] + p.Vel[1]*p.Vel[1] + p.Vel[2]*p.Vel[2]
-		if vv < 1 || p.Kind == "mortar" {
-			continue
-		}
-		tc := (rx*p.Vel[0] + ry*p.Vel[1] + rz*p.Vel[2]) / vv
-		if tc < 0 || tc > 0.8 {
-			continue
-		}
-		mx, my := p.Pos[0]+p.Vel[0]*tc-x, p.Pos[1]+p.Vel[1]*tc-y
-		if hyp(mx, my) < 4 {
-			vx, vy := norm(p.Vel[0], p.Vel[1])
-			s := b.strafe
-			if s == 0 {
-				s = 1
-			}
-			moveX, moveY = -vy*s, vx*s
+	// dodge (port of bot.py dodge_vector): charging lasers aimed at us, mortar landing points
+	if dx, dy, ok := b.dodgeVector(o); ok {
+		moveX, moveY = moveX*0.4+dx, moveY*0.4+dy
+		if me.Energy > 30 {
+			a.Boost = true
 		}
 	}
 	// laser grab within 90 m (target present or not)
@@ -784,7 +845,7 @@ func main() {
 		out.WriteByte('\n')
 		out.Flush()
 	}
-	bot := &Bot{strafe: 1, hitFrom: map[int]float64{}}
+	bot := &Bot{strafe: 1, hitFrom: map[int]float64{}, knownPk: map[int]KPk{}}
 	for l := range lines {
 		// skip to newest obs
 	drain:
