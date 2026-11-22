@@ -52,6 +52,8 @@ type Mech struct {
 	HP       float64    `json:"hp"`
 	Cubes    int        `json:"cubes"`
 	Charging bool       `json:"charging"`
+	MaxHP    float64    `json:"max_hp"`
+	Weapons  []string   `json:"weapons"`
 }
 type Proj struct {
 	Kind string     `json:"kind"`
@@ -326,7 +328,6 @@ func (b *Bot) act(o *Obs) Action {
 	x, y := me.Pos[0], me.Pos[1]
 	var tgt *Mech
 	td := 1e9
-	myMax := math.Max(me.MaxHP, 1400)
 	for i := range o.Mechs {
 		m := &o.Mechs[i]
 		d := hyp(m.Pos[0]-x, m.Pos[1]-y)
@@ -379,49 +380,120 @@ func (b *Bot) act(o *Obs) Action {
 	if tgt != nil {
 		clear := b.nav.los(x, y, me.Pos[2]+7, tgt.Pos[0], tgt.Pos[1], tgt.Pos[2]+4.5)
 		d := hyp(tgt.Pos[0]-x, tgt.Pos[1]-y)
-		want := 100.0
-		if la >= 0 {
-			want = 120
-		} else if li >= 0 && gi < 0 {
-			want = 28
-		}
-		if tgt.Kind != "mech" {
-			want = 55
-		} else {
-			thp := tgt.HP / myMax
-			crowd := 0
-			for k := range o.Mechs {
-				if o.Mechs[k].ID != tgt.ID && o.Mechs[k].Kind == "mech" && hyp(o.Mechs[k].Pos[0]-x, o.Mechs[k].Pos[1]-y) < 150 {
-					crowd++
-				}
+		// v63 fight_vector port (effective P settings)
+		rx, ry := norm(tgt.Pos[0]-x, tgt.Pos[1]-y)
+		px, py := -ry, rx
+		walk := func(wx, wy float64) bool {
+			if b.nav == nil || !b.nav.ok {
+				return true
 			}
-			if (thp < 0.38 || thp < hpf-0.15) && crowd == 0 {
-				want = math.Min(want, 45)
-			}
+			i, j := b.nav.cell(wx, wy)
+			return b.nav.free(i, j)
 		}
-		if t > b.strafeUntil {
+		aheadX, aheadY := x+px*b.strafe*7.0, y+py*b.strafe*7.0
+		if t > b.strafeUntil || (t > b.strafeUntil-4.0+0.8 && !walk(aheadX, aheadY)) {
 			b.strafe = -b.strafe
 			if b.strafe == 0 {
 				b.strafe = 1
 			}
-			b.strafeUntil = t + 2 + 2*(t*13.7-math.Floor(t*13.7))
+			b.strafeUntil = t + 2.0 + rand.Float64()*2.0
 		}
-		rx, ry := norm(tgt.Pos[0]-x, tgt.Pos[1]-y)
+		tmax := tgt.MaxHP
+		if tmax <= 0 {
+			tmax = 1400
+		}
+		thp := tgt.HP / math.Max(tmax, 1)
+		var want float64
+		if li >= 0 && me.Energy > 20 {
+			want = 28
+		} else if la >= 0 {
+			want = 120
+		} else {
+			want = 100
+		}
+		if thp < 0.38 || thp < hpf-0.12 { // crowd == 0 (press_multi_block False)
+			want = math.Min(want, 45)
+		}
+		theirLight, theirLaser := false, false
+		for _, k := range tgt.Weapons {
+			if k == "lightning" {
+				theirLight = true
+			}
+			if k == "laser" {
+				theirLaser = true
+			}
+		}
+		if theirLight && li < 0 {
+			want = math.Max(want, 60)
+		}
+		if la >= 0 && !theirLaser && tgt.Kind == "mech" && t >= b.shorted {
+			if thp > 0.2 {
+				want = 180
+			} else {
+				want = 120
+			}
+		}
+		radial := math.Max(-1, math.Min(1, (d-want)/30.0))
 		ax, ay := rx, ry
-		radial := 0.0
-		if d > want+15 {
-			radial = 1
-		} else if d < want-25 {
-			radial = -1
-		}
-		if hpf < 0.4 {
-			radial = -1
-		}
 		if radial > 0 && b.nav != nil && b.nav.ok && !b.nav.lineClear(x, y, tgt.Pos[0], tgt.Pos[1]) {
 			ax, ay = b.steer(x, y, tgt.Pos[0], tgt.Pos[1], t)
 		}
-		moveX = ax*radial + -ry*b.strafe*0.9
-		moveY = ay*radial + rx*b.strafe*0.9
+		moveX = px*b.strafe*0.9 + ax*radial*0.7
+		moveY = py*b.strafe*0.9 + ay*radial*0.7
+		if tgt.Kind == "mech" && b.nav != nil && b.nav.ok {
+			var others []*Mech
+			for k := range o.Mechs {
+				e := &o.Mechs[k]
+				if e.Kind == "mech" && e.ID != tgt.ID && e.ID != me.ID && hyp(e.Pos[0]-x, e.Pos[1]-y) < 170 {
+					others = append(others, e)
+				}
+			}
+			if len(others) > 0 {
+				found := false
+				bestS := 0.0
+				bvx, bvy := 0.0, 0.0
+				for k := 0; k < 16; k++ {
+					ang := float64(k) * math.Pi / 8
+					dx, dy := math.Cos(ang), math.Sin(ang)
+					cx, cy := x+dx*7.0, y+dy*7.0
+					if !walk(cx, cy) {
+						continue
+					}
+					sc := -1.1*math.Abs(hyp(cx-tgt.Pos[0], cy-tgt.Pos[1])-want) + 12.0*(dx*px*b.strafe+dy*py*b.strafe)
+					gz := b.nav.ground(cx, cy)
+					for _, e := range others {
+						if b.nav.los(e.Pos[0], e.Pos[1], e.Pos[2]+5.0, cx, cy, gz+3.5) {
+							sc -= 30.0
+						}
+					}
+					if !found || sc > bestS {
+						found, bestS, bvx, bvy = true, sc, dx, dy
+					}
+				}
+				if found {
+					moveX, moveY = bvx*1.1, bvy*1.1
+				}
+			}
+		}
+
+		// cube-grab: visible cube close by, move to it while still aiming/firing
+		if hpf > 0.3 {
+			cd := 1e9
+			var cx, cy float64
+			for i := range o.Cubes {
+				c := &o.Cubes[i]
+				dd := hyp(c.Pos[0]-x, c.Pos[1]-y)
+				if dd < 100 && dd < cd && math.Abs(c.Pos[2]-me.Pos[2]) < 6 && hyp(c.Pos[0]-zcx, c.Pos[1]-zcy) < zr-10 {
+					cd, cx, cy = dd, c.Pos[0], c.Pos[1]
+				}
+			}
+			if cd < 100 {
+				moveX, moveY = b.steer(x, y, cx, cy, t)
+				if cd > 12 && me.Energy > 30 {
+					a.Boost = true
+				}
+			}
+		}
 
 		// shoot
 		spd := 252.0
