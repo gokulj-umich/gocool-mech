@@ -342,6 +342,8 @@ UPG_ARMOR = ["plating", "armor", "laser_damage", "laser_charge", "nanites", "gun
 # valuation ranks it top) then plating / armor / laser
 UPG_ARMOR[:] = ["nanites", "plating", "armor", "laser_damage", "laser_charge"] + [u for u in UPG_ARMOR if u not in
               ("nanites", "plating", "armor", "laser_damage", "laser_charge")]
+# v49: round-3 search (3 of the top 4 mixes): hold gun fights at 85 m (was 100), break line of sight only at 4 watchers
+P.update({"want_gun": 85.0, "converge_n": 4})
 WEAPON_RANK = {"lightning": 3.0, "laser": 2.6, "mortar": 1.0, "gun": 0.0}
 if P["laser_first"]:
     WEAPON_RANK["laser"] = 4.0
