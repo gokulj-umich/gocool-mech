@@ -103,11 +103,24 @@ type Action struct {
 	Reload bool       `json:"reload,omitempty"`
 	Pick   *int       `json:"pick,omitempty"`
 	Take   *int       `json:"take,omitempty"`
+	Drop   *int       `json:"drop,omitempty"`
 }
 
 var upg = []string{"nanites", "plating", "armor", "laser_damage", "laser_charge", "gun_damage", "gun_mag", "gun_rate",
 	"lightning_efficiency", "lightning_range", "servos", "gun_velocity", "gyros", "lightning_chain", "reactor",
 	"capacitor", "sensors", "jets"}
+
+func wrank(k string) float64 {
+	switch k {
+	case "laser":
+		return 4.0
+	case "lightning":
+		return 2.5
+	case "mortar":
+		return 1.0
+	}
+	return 0
+}
 
 func wrap(a float64) float64 {
 	return math.Mod(math.Mod(a+math.Pi, 2*math.Pi)+2*math.Pi, 2*math.Pi) - math.Pi
@@ -512,14 +525,32 @@ func (b *Bot) act(o *Obs) Action {
 			}
 		}
 	}
-	// pickup take
+	// pickup take (WEAPON_RANK, laser first)
+	cur1 := ""
+	if len(me.Weapons) > 1 && me.Weapons[1] != nil {
+		cur1 = me.Weapons[1].Kind
+	}
 	for i := range o.Pickups {
 		p := &o.Pickups[i]
-		if hyp(p.Pos[0]-x, p.Pos[1]-y) < 3.5 && math.Abs(p.Pos[2]-me.Pos[2]) < 3.5 &&
-			(p.Kind == "laser" && la < 0 || p.Kind == "lightning" && li < 0 || p.Kind == "mortar" && false) &&
-			(me.Weapons == nil || len(me.Weapons) < 2 || me.Weapons[1] == nil) {
+		if p.Kind == "gun" || p.Kind == "laser" && la >= 0 || p.Kind == "lightning" && li >= 0 || p.Kind == "mortar" && false {
+			continue
+		}
+		if p.Kind != "laser" && p.Kind != "lightning" {
+			continue
+		}
+		if cur1 != "" && wrank(p.Kind) <= wrank(cur1)+0.1 {
+			continue
+		}
+		if hyp(p.Pos[0]-x, p.Pos[1]-y) < 3.5 && math.Abs(p.Pos[2]-me.Pos[2]) < 3.5 {
+			if cur1 == "laser" && me.Weapons[1].Charge > 0 {
+				continue
+			}
 			id := p.ID
 			a.Take = &id
+			if cur1 != "" {
+				one := 1
+				a.Drop = &one
+			}
 		}
 	}
 	// zone override
@@ -571,6 +602,24 @@ func (b *Bot) act(o *Obs) Action {
 				s = 1
 			}
 			moveX, moveY = -vy*s, vx*s
+		}
+	}
+	// laser grab within 90 m (target present or not)
+	if la < 0 && hpf > 0.3 && !outside {
+		gd, gx, gy := 90.0, 0.0, 0.0
+		gf := false
+		for i := range o.Pickups {
+			p := &o.Pickups[i]
+			d := hyp(p.Pos[0]-x, p.Pos[1]-y)
+			if p.Kind == "laser" && d < gd && math.Abs(p.Pos[2]-me.Pos[2]) < 6 {
+				gd, gx, gy, gf = d, p.Pos[0], p.Pos[1], true
+			}
+		}
+		if gf {
+			moveX, moveY = b.steer(x, y, gx, gy, t)
+			if gd > 12 && me.Energy > 30 {
+				a.Boost = true
+			}
 		}
 	}
 	// retreat rule: <38% w/ threat or <50% w/ 2+; recover to 80%
