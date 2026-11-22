@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"time"
 )
 
 type WStats struct {
@@ -40,6 +41,7 @@ type Self struct {
 	Cubes   int        `json:"cubes"`
 	Weapons []*Weapon  `json:"weapons"`
 	Stats   SelfStats  `json:"stats"`
+	InZone  *bool      `json:"in_zone"`
 }
 type Mech struct {
 	ID       int        `json:"id"`
@@ -71,6 +73,7 @@ type Zone struct {
 	NextCenter  [2]float64 `json:"next_center"`
 	NextRadius  float64    `json:"next_radius"`
 	ShrinkStart float64    `json:"shrink_start"`
+	ShrinkEnd   float64    `json:"shrink_end"`
 }
 type Choice struct {
 	ID string `json:"id"`
@@ -117,6 +120,7 @@ type Bot struct {
 	strafeUntil float64
 	shorted     float64
 	lastCharge  float64
+	nav         *Nav
 }
 
 func (b *Bot) lead(me *Self, tgt *Mech, speed float64) (yaw, pitch, hd float64) {
@@ -225,18 +229,54 @@ func (b *Bot) act(o *Obs) Action {
 	}
 	x, y := me.Pos[0], me.Pos[1]
 	moveX, moveY := 0.0, 0.0
-	// zone center / safety
+	// zone logic (port of bot_reference zone_goal / urgent_zone / zone_ok)
 	zcx, zcy, zr := x, y, 1e9
+	outside, urgent, hasGoal := false, false, false
+	var gx, gy float64
+	zoneOK := func(px, py float64) bool { return true }
 	if o.Zone != nil {
 		z := o.Zone
-		zcx, zcy, zr = z.Center[0], z.Center[1], z.Radius
-		if t >= z.ShrinkStart-20 && z.NextRadius > 0 {
-			zcx, zcy = z.NextCenter[0], z.NextCenter[1]
-			zr = z.NextRadius
+		cx, cy, r := z.NextCenter[0], z.NextCenter[1], z.NextRadius
+		if t >= z.ShrinkEnd-0.01 && z.NextRadius >= z.Radius-0.5 {
+			cx, cy, r = z.Center[0], z.Center[1], z.Radius
+		}
+		var mr float64
+		if r <= 30 {
+			mr = math.Max(0, r*0.35)
+		} else if r <= 80 {
+			mr = r * 0.5
+		} else {
+			mr = math.Max(r*0.55, r-60)
+		}
+		zcx, zcy, zr = cx, cy, r
+		dd := hyp(x-cx, y-cy)
+		if dd > mr {
+			s := mr / math.Max(dd, 1e-6)
+			gx, gy = cx+(x-cx)*s, cy+(y-cy)*s
+			hasGoal = true
+		}
+		tts := z.ShrinkStart - t
+		inZ := true
+		if me.InZone != nil {
+			inZ = *me.InZone
+		}
+		outside = !inZ
+		urgent = !inZ || (hasGoal && (tts < hyp(gx-x, gy-y)/9.0+8.0 || t >= z.ShrinkStart))
+		ncx, ncy, nr := z.NextCenter[0], z.NextCenter[1], z.NextRadius
+		zoneOK = func(px, py float64) bool {
+			dn := hyp(px-ncx, py-ncy)
+			if dn <= nr*0.85 {
+				return true
+			}
+			return tts > hyp(px-x, py-y)/9.0+dn/9.0+15.0 && t < z.ShrinkStart
+		}
+		if !hasGoal {
+			// inside safe margin of the circle
+			_ = zr
 		}
 	}
 	zd := hyp(zcx-x, zcy-y)
-	outside := zd > zr-25
+	_ = zd
 
 	if tgt != nil {
 		d := hyp(tgt.Pos[0]-x, tgt.Pos[1]-y)
@@ -387,7 +427,7 @@ func (b *Bot) act(o *Obs) Action {
 		for i := range o.Pickups {
 			p := &o.Pickups[i]
 			d := hyp(p.Pos[0]-x, p.Pos[1]-y)
-			if (p.Kind == "laser" && la < 0 || p.Kind == "lightning" && li < 0 && la >= 0 || p.Kind == "laser" && li >= 0 && la < 0) && d < 110 && d < bestD {
+			if (p.Kind == "laser" && la < 0 || p.Kind == "lightning" && li < 0 && la >= 0 || p.Kind == "laser" && li >= 0 && la < 0) && d < 110 && d < bestD && zoneOK(p.Pos[0], p.Pos[1]) {
 				bestD, tx, ty, found = d, p.Pos[0], p.Pos[1], true
 			}
 		}
@@ -395,18 +435,15 @@ func (b *Bot) act(o *Obs) Action {
 			for i := range o.Cubes {
 				p := &o.Cubes[i]
 				d := hyp(p.Pos[0]-x, p.Pos[1]-y)
-				if d < 100 && d < bestD {
+				if d < 100 && d < bestD && zoneOK(p.Pos[0], p.Pos[1]) {
 					bestD, tx, ty, found = d, p.Pos[0], p.Pos[1], true
 				}
 			}
 		}
-		if found && !outside {
+		if found && !urgent {
 			moveX, moveY = norm(tx-x, ty-y)
-		} else {
-			moveX, moveY = norm(zcx-x, zcy-y)
-			if zd < zr*0.35 {
-				moveX, moveY = 0, 0
-			}
+		} else if hasGoal {
+			moveX, moveY = norm(gx-x, gy-y)
 		}
 		// idle sweep
 		a.Aim = [2]float64{wrap(me.Aim[0] + 0.5), 0}
@@ -427,11 +464,28 @@ func (b *Bot) act(o *Obs) Action {
 			a.Take = &id
 		}
 	}
-	// zone override
-	if outside {
-		zx, zy := norm(zcx-x, zcy-y)
-		moveX, moveY = moveX*0.3+zx, moveY*0.3+zy
-		if me.Energy > 40 {
+	// zone override: follow A* path to safe goal; don't chase things outside the safe area
+	if tgt != nil && !urgent && !zoneOK(tgt.Pos[0], tgt.Pos[1]) {
+		if hasGoal {
+			moveX, moveY = norm(gx-x, gy-y)
+		} else {
+			moveX, moveY = 0, 0
+		}
+	}
+	if urgent && hasGoal {
+		mx0, my0 := norm(gx-x, gy-y)
+		if b.nav != nil && b.nav.ok {
+			pth := b.nav.path(x, y, gx, gy, 12*time.Millisecond)
+			for _, wp := range pth {
+				if hyp(wp[0]-x, wp[1]-y) > 5 {
+					mx0, my0 = norm(wp[0]-x, wp[1]-y)
+					break
+				}
+			}
+		}
+		moveX, moveY = mx0, my0
+		tts := o.Zone.ShrinkStart - t
+		if (outside || tts < hyp(gx-x, gy-y)/11.0+3 || t >= o.Zone.ShrinkStart) && me.Energy > 15 {
 			a.Boost = true
 		}
 	}
@@ -543,6 +597,15 @@ func main() {
 		}
 		switch h.Type {
 		case "hello":
+			var hh struct {
+				Map struct {
+					Dir string `json:"dir"`
+				} `json:"map"`
+			}
+			json.Unmarshal(l, &hh)
+			if hh.Map.Dir != "" {
+				bot.nav = loadNav(hh.Map.Dir)
+			}
 			send(map[string]string{"type": "ready", "name": "gocool-go-F"})
 		case "obs":
 			var o Obs
