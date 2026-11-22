@@ -123,6 +123,37 @@ type Bot struct {
 	pathAt      float64
 	pathGx      float64
 	pathGy      float64
+	retreating  bool
+}
+
+// retreatDir: best of 16 headings: far from threats, inside zone, walkable.
+func (b *Bot) retreatDir(x, y float64, thr []*Mech, zcx, zcy, zr float64) (float64, float64) {
+	n := b.nav
+	bs, bx, by := -1e18, 0.0, 0.0
+	for k := 0; k < 16; k++ {
+		a := float64(k) * math.Pi / 8
+		dx, dy := math.Cos(a), math.Sin(a)
+		sc := 0.0
+		for _, d := range []float64{15, 35} {
+			px, py := x+dx*d, y+dy*d
+			for _, m := range thr {
+				sc += math.Min(hyp(px-m.Pos[0], py-m.Pos[1]), 200) * (d / 35)
+			}
+			if o := hyp(px-zcx, py-zcy) - (zr - 20); o > 0 {
+				sc -= o * 3
+			}
+			if n != nil && n.ok {
+				i, j := n.cell(px, py)
+				if !n.free(i, j) {
+					sc -= 150
+				}
+			}
+		}
+		if sc > bs {
+			bs, bx, by = sc, dx, dy
+		}
+	}
+	return bx, by
 }
 
 // steer returns a unit direction toward (gx,gy) via A* waypoints; straight line fallback.
@@ -503,6 +534,33 @@ func (b *Bot) act(o *Obs) Action {
 				s = 1
 			}
 			moveX, moveY = -vy*s, vx*s
+		}
+	}
+	// retreat rule: <38% w/ threat or <50% w/ 2+; recover to 80%
+	var thr []*Mech
+	near40 := false
+	for i := range o.Mechs {
+		m := &o.Mechs[i]
+		if m.Kind != "mech" || m.HP <= 0 {
+			continue
+		}
+		d := hyp(m.Pos[0]-x, m.Pos[1]-y)
+		if d < 160 {
+			thr = append(thr, m)
+		}
+		if d < 40 {
+			near40 = true
+		}
+	}
+	if hpf >= 0.8 || len(thr) == 0 && hpf >= 0.5 {
+		b.retreating = false
+	} else if len(thr) > 0 && (hpf < 0.38 || hpf < 0.5 && len(thr) >= 2) {
+		b.retreating = true
+	}
+	if b.retreating && !near40 && len(thr) > 0 {
+		moveX, moveY = b.retreatDir(x, y, thr, zcx, zcy, zr)
+		if outside && me.Energy > 40 {
+			a.Boost = true
 		}
 	}
 	mx, my := norm(moveX, moveY)
