@@ -301,6 +301,8 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
           "stick": 0.0,                            # v38: score bonus for the current target (stop target thrashing)
           "stick_hurt": 0.0,                       # extra bonus per missing HP fraction of the target
           "solo_duel": False, "solo_hp": 0.25,
+          "blind_fire": False,                     # v48 (Xero): hit by an unseen shooter in the last 1.5 s -> fire the gun along its bearing
+          "retreat_holdfire": False,               # v48 (Bryantan): no shooting while retreating (dealing damage blocks regen)
           "g_outgun": False,                       # v47 (giddy): retreat when target has a laser, we don't, it's >55 m and hp<80%
           "g_swamp": False,                        # v47 (giddy): retreat when 3+ engaged/close mechs see us, or 2 and hp<65%
           "g_target": False,                       # v47 (giddy): target score = dist + .18*hp, -200 low, -200 sticky 2 s, -40 hit us, -15 closing
@@ -1304,6 +1306,13 @@ class Bot:
             if gw.get("ammo", 12) <= 5 and gw.get("reload", 0) == 0:
                 act["reload"] = True
 
+        if (P["blind_fire"] and target is None and self.threat_bearing is not None and t - self.threat_t < 1.5
+                and "gun" in slots and not any(fire)):
+            aim = [self.threat_bearing, 0.0]
+            fire = list(fire)
+            fire[slots["gun"]] = True
+        if P["retreat_holdfire"] and label.startswith("retreat") and min((e["_d"] for e in enemies), default=999.0) > 40.0:
+            fire = [False] * len(fire)
         act.update(move=move, boost=bool(boost), jump=bool(jump), aim=aim, fire=fire)
         if LABLOG and int(t * 10) % 10 == 0:
             vis_n = sum(1 for e in enemies if e.get("_los"))
