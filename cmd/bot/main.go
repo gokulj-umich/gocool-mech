@@ -151,6 +151,7 @@ type Bot struct {
 	pathGy      float64
 	retreating  bool
 	hitFrom     map[int]float64
+	lastDmg     float64
 	curTid      int
 	ghosts      map[int]ghostT
 	heardB      float64
@@ -259,6 +260,9 @@ func (b *Bot) act(o *Obs) Action {
 		if e.Type == "effect" && e.Effect == "short" {
 			b.shorted = t + 2.0
 		}
+		if e.Type == "damaged" {
+			b.lastDmg = t
+		}
 		if e.Type == "damaged" && e.By != 0 {
 			b.hitFrom[e.By] = t
 		}
@@ -326,6 +330,7 @@ func (b *Bot) act(o *Obs) Action {
 	x, y := me.Pos[0], me.Pos[1]
 	var tgt *Mech
 	td := 1e9
+	recentlyHit := b.lastDmg > 0 && t-b.lastDmg < 3.0
 	myMax := math.Max(me.MaxHP, 1400)
 	for i := range o.Mechs {
 		m := &o.Mechs[i]
@@ -346,6 +351,9 @@ func (b *Bot) act(o *Obs) Action {
 		hf, hit := b.hitFrom[m.ID]
 		threat := hit && t-hf < 6.0 ||
 			math.Abs(wrap(m.Aim[0]-bear)) < 0.22 && (closing > 1 || d < 120) || d < 45
+		if m.Kind == "mech" && recentlyHit && d < 120 {
+			sc -= 60
+		}
 		if m.Kind == "mech" {
 			if threat {
 				sc -= 90
@@ -743,7 +751,18 @@ func (b *Bot) act(o *Obs) Action {
 	} else if len(thr) > 0 && (hpf < 0.38 || hpf < 0.5 && len(thr) >= 2) {
 		b.retreating = true
 	}
-	if b.retreating && !near40 && len(thr) > 0 {
+	converging := false
+	eyes := 0
+	for _, m := range thr {
+		dd := hyp(m.Pos[0]-x, m.Pos[1]-y)
+		if dd < 150 && math.Abs(wrap(m.Aim[0]-math.Atan2(y-m.Pos[1], x-m.Pos[0]))) < 0.35 {
+			eyes++
+		}
+	}
+	if eyes >= 4 {
+		converging = true
+	}
+	if (b.retreating || converging) && !near40 && len(thr) > 0 {
 		moveX, moveY = b.retreatDir(x, y, thr, zcx, zcy, zr)
 		if outside && me.Energy > 40 {
 			a.Boost = true
