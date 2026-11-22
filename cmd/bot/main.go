@@ -41,6 +41,7 @@ type Self struct {
 	Cubes   int        `json:"cubes"`
 	Weapons []*Weapon  `json:"weapons"`
 	Stats   SelfStats  `json:"stats"`
+	InZone  *bool      `json:"in_zone"`
 }
 type Mech struct {
 	ID       int        `json:"id"`
@@ -72,6 +73,7 @@ type Zone struct {
 	NextCenter  [2]float64 `json:"next_center"`
 	NextRadius  float64    `json:"next_radius"`
 	ShrinkStart float64    `json:"shrink_start"`
+	ShrinkEnd   float64    `json:"shrink_end"`
 }
 type Choice struct {
 	ID string `json:"id"`
@@ -251,18 +253,51 @@ func (b *Bot) act(o *Obs) Action {
 	}
 	x, y := me.Pos[0], me.Pos[1]
 	moveX, moveY := 0.0, 0.0
-	// zone center / safety
+	// zone logic (port from v72-go-4)
 	zcx, zcy, zr := x, y, 1e9
+	outside, urgent, hasGoal := false, false, false
+	var gx, gy float64
+	zoneOK := func(px, py float64) bool { return true }
 	if o.Zone != nil {
 		z := o.Zone
-		zcx, zcy, zr = z.Center[0], z.Center[1], z.Radius
-		if t >= z.ShrinkStart-20 && z.NextRadius > 0 {
-			zcx, zcy = z.NextCenter[0], z.NextCenter[1]
-			zr = z.NextRadius
+		cx, cy, r := z.NextCenter[0], z.NextCenter[1], z.NextRadius
+		if t >= z.ShrinkEnd-0.01 && z.NextRadius >= z.Radius-0.5 {
+			cx, cy, r = z.Center[0], z.Center[1], z.Radius
+		}
+		var mr float64
+		if r <= 30 {
+			mr = math.Max(0, r*0.35)
+		} else if r <= 80 {
+			mr = r * 0.5
+		} else {
+			mr = math.Max(r*0.55, r-60)
+		}
+		zcx, zcy, zr = cx, cy, r
+		dd := hyp(x-cx, y-cy)
+		if dd > mr {
+			sc := mr / math.Max(dd, 1e-6)
+			gx, gy = cx+(x-cx)*sc, cy+(y-cy)*sc
+			hasGoal = true
+		}
+		tts := z.ShrinkStart - t
+		inZ := true
+		if me.InZone != nil {
+			inZ = *me.InZone
+		}
+		outside = !inZ
+		urgent = !inZ || (hasGoal && (tts < hyp(gx-x, gy-y)/9.0+8.0 || t >= z.ShrinkStart))
+		ncx, ncy, nr := z.NextCenter[0], z.NextCenter[1], z.NextRadius
+		zoneOK = func(px, py float64) bool {
+			dn := hyp(px-ncx, py-ncy)
+			if dn <= nr*0.85 {
+				return true
+			}
+			return tts > hyp(px-x, py-y)/9.0+dn/9.0+15.0 && t < z.ShrinkStart
 		}
 	}
-	zd := hyp(zcx-x, zcy-y)
-	outside := zd > zr-25
+	_ = zcx
+	_ = zcy
+	_ = zr
 
 	if tgt != nil {
 		clear := b.nav.los(x, y, me.Pos[2]+7, tgt.Pos[0], tgt.Pos[1], tgt.Pos[2]+4.5)
@@ -414,7 +449,7 @@ func (b *Bot) act(o *Obs) Action {
 		for i := range o.Pickups {
 			p := &o.Pickups[i]
 			d := hyp(p.Pos[0]-x, p.Pos[1]-y)
-			if (p.Kind == "laser" && la < 0 || p.Kind == "lightning" && li < 0 && la >= 0 || p.Kind == "laser" && li >= 0 && la < 0) && d < 110 && d < bestD {
+			if (p.Kind == "laser" && la < 0 || p.Kind == "lightning" && li < 0 && la >= 0 || p.Kind == "laser" && li >= 0 && la < 0) && d < 110 && d < bestD && zoneOK(p.Pos[0], p.Pos[1]) {
 				bestD, tx, ty, found = d, p.Pos[0], p.Pos[1], true
 			}
 		}
@@ -422,18 +457,15 @@ func (b *Bot) act(o *Obs) Action {
 			for i := range o.Cubes {
 				p := &o.Cubes[i]
 				d := hyp(p.Pos[0]-x, p.Pos[1]-y)
-				if d < 100 && d < bestD {
+				if d < 100 && d < bestD && zoneOK(p.Pos[0], p.Pos[1]) {
 					bestD, tx, ty, found = d, p.Pos[0], p.Pos[1], true
 				}
 			}
 		}
-		if found && !outside {
+		if found && !urgent {
 			moveX, moveY = norm(tx-x, ty-y)
-		} else {
-			moveX, moveY = b.steer(x, y, zcx, zcy, t)
-			if zd < zr*0.35 {
-				moveX, moveY = 0, 0
-			}
+		} else if hasGoal {
+			moveX, moveY = b.steer(x, y, gx, gy, t)
 		}
 		// idle sweep
 		a.Aim = [2]float64{wrap(me.Aim[0] + 0.5), 0}
@@ -455,10 +487,17 @@ func (b *Bot) act(o *Obs) Action {
 		}
 	}
 	// zone override
-	if outside {
-		zx, zy := b.steer(x, y, zcx, zcy, t)
-		moveX, moveY = moveX*0.3+zx, moveY*0.3+zy
-		if me.Energy > 40 {
+	if tgt != nil && !urgent && !zoneOK(tgt.Pos[0], tgt.Pos[1]) {
+		if hasGoal {
+			moveX, moveY = b.steer(x, y, gx, gy, t)
+		} else {
+			moveX, moveY = 0, 0
+		}
+	}
+	if urgent && hasGoal {
+		moveX, moveY = b.steer(x, y, gx, gy, t)
+		tts := o.Zone.ShrinkStart - t
+		if (outside || tts < hyp(gx-x, gy-y)/11.0+3 || t >= o.Zone.ShrinkStart) && me.Energy > 15 {
 			a.Boost = true
 		}
 	}
