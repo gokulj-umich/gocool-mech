@@ -347,6 +347,8 @@ UPG_ARMOR = ["plating", "armor", "laser_damage", "laser_charge", "nanites", "gun
 # valuation ranks it top) then plating / armor / laser
 UPG_ARMOR[:] = ["nanites", "plating", "armor", "laser_damage", "laser_charge"] + [u for u in UPG_ARMOR if u not in
               ("nanites", "plating", "armor", "laser_damage", "laser_charge")]
+# v57-e11: hybrid of real-best b06 (5.06) and a60 (4.88): s2 +0.14 vs b06
+P.update({'avoid_r': 0, 'converge_n': 5, 'cube_fight_hp': 0.3, 'econ': True, 'engage_r': 300, 'fight_expo': 0, 'gang_escape': False, 'laser_grab_r': 90, 'laser_hunt_r': 320, 'lose_rule': False, 'press_gap': 0.15, 'retreat_hp_multi': 0.5, 'solo_hp': 0.15, 'want_laser': 120})
 WEAPON_RANK = {"lightning": 3.0, "laser": 2.6, "mortar": 1.0, "gun": 0.0}
 if P["laser_first"]:
     WEAPON_RANK["laser"] = 4.0
