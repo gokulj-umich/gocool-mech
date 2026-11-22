@@ -296,6 +296,7 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
           "fight_expo": 0.0,
           "reactive": False,                       # only engage mechs that are close (<60), hit us, close in, are hurt, or aim at us
           "react_r": 60.0,
+          "regen": False, "regen_hp": 0.8, "regen_to": 0.95, "regen_fin": 0.3,   # break LOS, hold fire, regen to full
           "idle_still": False,                     # nothing to do: stand still where we are (giddy waits ~50% of its life)
           "idle_still_hp": 0.0,                    # ...only while hp >= this (0 = always)                       # fight spot choice: penalty per other enemy that can see the spot
           })
@@ -342,7 +343,8 @@ class Bot:
         self.threat_t = -99.0
         self.last_damage_t = -99.0
         self.hits_by = []
-        self.hit_from = {}         # v19: (t, attacker id) for recent damage
+        self.hit_from = {}
+        self.regen_on = False         # v19: (t, attacker id) for recent damage
         self.gang_until = -99.0
         self.cur_threats = []
         self.cur_enemies = []
@@ -862,6 +864,14 @@ class Bot:
         label = ""
         farm_shoot = None
 
+        regen_defend = False
+        if P["regen"]:
+            fin = target is not None and target.get("hp", 1400) / max(target.get("max_hp", 1400), 1) < P["regen_fin"] and target["_d"] < 120
+            if not self.regen_on and hp_frac < P["regen_hp"] and not fin:
+                self.regen_on = True
+            if self.regen_on and (hp_frac >= P["regen_to"] or fin):
+                self.regen_on = False
+            regen_defend = self.regen_on and under_fire and near_enemy < 60 and hp_frac > 0.35
         if urgent_zone and zgoal is not None:
             label = "zone"
             move = self.go_to(me, self.zone_plan, zgoal, t)
@@ -870,6 +880,15 @@ class Bot:
             label = pp_res["label"]
             move, boost, jump = pp_res["move"], pp_res["boost"], pp_res["jump"]
             no_steer = True
+        elif self.regen_on and not regen_defend:
+            seen_by = [e for e in enemies if e["_d"] < 220 and w.los((e["pos"][0], e["pos"][1], e["pos"][2] + 5.0), (x, y, z + 3.5))]
+            if seen_by:
+                label = "regen-hide"
+                move = self.retreat_vector(me, seen_by, circle)
+                boost = me["energy"] > 25
+            else:
+                label = "regen"
+                move = [0.0, 0.0]
         elif losing:
             label = "retreat"
             move = self.retreat_vector(me, threats, circle)
@@ -1100,6 +1119,8 @@ class Bot:
             self.ignore_crates[c["id"]] = self.ignore_crates.get(c["id"], 0) + 1
         if aim is None:
             aim = self.idle_aim(obs, me, enemies, t, move)
+        if label.startswith("regen"):
+            fire = [False, False]   # dealing damage resets the 5 s regen timer
 
         # reload when idle and low
         g = slots.get("gun")
