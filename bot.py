@@ -323,6 +323,7 @@ P.update({"retreat_hp_multi": 0.5, "lose_rule": False, "fight_expo": 30.0, "stra
 # v42: top-team real-proven ideas on top of v41 (4.60): Xero solo duel (real +0.19), heal to 80% after a retreat
 # (sim +0.01 on r14), r41 extras (sim +0.57 search): retreat when hit at 45%, avoid idle mechs within 80 m, laser 130 m
 P.update({"solo_duel": True, "solo_hp": 0.25, "recover_hp": 0.8, "retreat_hp": 0.45, "avoid_r": 80.0, "want_laser": 130.0})
+
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
     import json as _json
@@ -337,6 +338,10 @@ UPGRADE_PRIORITY = ["plating", "gun_mag", "gun_damage", "laser_damage", "nanites
 UPG_ARMOR = ["plating", "armor", "laser_damage", "laser_charge", "nanites", "gun_damage", "gun_mag", "gun_rate",
              "lightning_efficiency", "lightning_range", "servos", "gun_velocity", "gyros", "lightning_chain", "reactor",
              "capacitor", "sensors", "jets", "mortar_reload", "mortar_velocity", "mortar_splash", "laser_pierce"]
+# v45: upgrade order with repair nanites first (+60% out-of-combat regen, starts 1.5 s sooner; Marwan's practice
+# valuation ranks it top) then plating / armor / laser
+UPG_ARMOR[:] = ["nanites", "plating", "armor", "laser_damage", "laser_charge"] + [u for u in UPG_ARMOR if u not in
+              ("nanites", "plating", "armor", "laser_damage", "laser_charge")]
 WEAPON_RANK = {"lightning": 3.0, "laser": 2.6, "mortar": 1.0, "gun": 0.0}
 if P["laser_first"]:
     WEAPON_RANK["laser"] = 4.0
