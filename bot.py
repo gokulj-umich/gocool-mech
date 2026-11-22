@@ -315,6 +315,8 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
           })
 # v36 defaults: best sim knobs on top of v33b (giddy-style retreat 38% -> recover 80%, lethal laser release, armor-first upgrades)
 P.update({"retreat_hp": 0.38, "recover_hp": 0.8, "lethal_laser": True, "upg": "armor"})
+# v38 probe: loot memory + grab cubes in fights + hunters first (sim +0.14 vs v36)
+P.update({"econ": True, "cube_fight_r": 70.0, "cube_fight_hp": 0.3, "threat_pri": 90.0})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
     import json as _json
