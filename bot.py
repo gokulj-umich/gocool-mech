@@ -347,6 +347,8 @@ UPG_ARMOR = ["plating", "armor", "laser_damage", "laser_charge", "nanites", "gun
 # valuation ranks it top) then plating / armor / laser
 UPG_ARMOR[:] = ["nanites", "plating", "armor", "laser_damage", "laser_charge"] + [u for u in UPG_ARMOR if u not in
               ("nanites", "plating", "armor", "laser_damage", "laser_charge")]
+# v53-a58: calibrated-sim search candidate a58 (s2 avg about +0.1 vs v45 over 600 fresh seeds)
+P.update({'threat_pri': 40, 'lose_rule': False, 'want_laser': 150, 'standoff': False, 'press_r': 30, 'powerup_until': 100, 'blind_fire': True, 'laser_hunt_r': 420, 'econ_r': 350, 'upg': 'base', 'heal_to': 0.8})
 WEAPON_RANK = {"lightning": 3.0, "laser": 2.6, "mortar": 1.0, "gun": 0.0}
 if P["laser_first"]:
     WEAPON_RANK["laser"] = 4.0
