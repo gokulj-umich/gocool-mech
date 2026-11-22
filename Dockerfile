@@ -1,7 +1,13 @@
-# Gocool mech bot. Build: docker build -t gocool .
-FROM python:3.13-slim
-ENV OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1
-RUN pip install --no-cache-dir numpy==2.3.5
+# Gocool mech bot (Go 1:1 port of bot.py). Build: docker build -t gocool .
+FROM golang:1.22 AS build
+WORKDIR /src
+COPY go.mod ./
+COPY cmd ./cmd
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/bot ./cmd/bot
+
+FROM scratch
 WORKDIR /bot
-COPY mechfight.py bot.py navmap.npz ./
-ENTRYPOINT ["python3", "-u", "/bot/bot.py"]
+COPY --from=build /out/bot /bot/bot
+COPY navmap.npz /bot/navmap.npz
+USER 65534:65534
+ENTRYPOINT ["/bot/bot"]
