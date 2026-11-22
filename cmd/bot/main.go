@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"time"
 )
 
 type WStats struct {
@@ -117,6 +118,57 @@ type Bot struct {
 	strafeUntil float64
 	shorted     float64
 	lastCharge  float64
+	nav         *Nav
+	wps         [][2]float64
+	pgx, pgy    float64
+	ptime       float64
+}
+
+// steer returns a unit direction toward (gx,gy) following A* waypoints; straight line fallback.
+func (b *Bot) steer(x, y, gx, gy, t float64) (float64, float64) {
+	if b.nav == nil || !b.nav.ok {
+		return norm(gx-x, gy-y)
+	}
+	if hyp(gx-x, gy-y) < 6 {
+		return norm(gx-x, gy-y)
+	}
+	if b.wps == nil || hyp(gx-b.pgx, gy-b.pgy) > 8 || t-b.ptime > 1.5 || t < b.ptime {
+		b.wps = b.nav.path(x, y, gx, gy, 12*time.Millisecond)
+		b.pgx, b.pgy, b.ptime = gx, gy, t
+		if len(b.wps) == 0 {
+			b.wps = nil
+			return norm(gx-x, gy-y)
+		}
+	}
+	// furthest waypoint (within 40m) with clear line of sight
+	ti := -1
+	for i := range b.wps {
+		w := b.wps[i]
+		d := hyp(w[0]-x, w[1]-y)
+		if d > 40 {
+			break
+		}
+		if d < 3 {
+			continue
+		}
+		if b.nav.lineClear(x, y, w[0], w[1]) {
+			ti = i
+		} else if ti >= 0 {
+			break
+		}
+	}
+	if ti < 0 {
+		for i := range b.wps {
+			if hyp(b.wps[i][0]-x, b.wps[i][1]-y) >= 3 {
+				ti = i
+				break
+			}
+		}
+	}
+	if ti < 0 {
+		return norm(gx-x, gy-y)
+	}
+	return norm(b.wps[ti][0]-x, b.wps[ti][1]-y)
 }
 
 func (b *Bot) lead(me *Self, tgt *Mech, speed float64) (yaw, pitch, hd float64) {
@@ -266,6 +318,9 @@ func (b *Bot) act(o *Obs) Action {
 		if hpf < 0.4 {
 			radial = -1
 		}
+		if radial > 0 {
+			rx, ry = b.steer(x, y, tgt.Pos[0], tgt.Pos[1], t)
+		}
 		moveX = rx*radial + -ry*b.strafe*0.9
 		moveY = ry*radial + rx*b.strafe*0.9
 
@@ -401,9 +456,9 @@ func (b *Bot) act(o *Obs) Action {
 			}
 		}
 		if found && !outside {
-			moveX, moveY = norm(tx-x, ty-y)
+			moveX, moveY = b.steer(x, y, tx, ty, t)
 		} else {
-			moveX, moveY = norm(zcx-x, zcy-y)
+			moveX, moveY = b.steer(x, y, zcx, zcy, t)
 			if zd < zr*0.35 {
 				moveX, moveY = 0, 0
 			}
@@ -429,7 +484,7 @@ func (b *Bot) act(o *Obs) Action {
 	}
 	// zone override
 	if outside {
-		zx, zy := norm(zcx-x, zcy-y)
+		zx, zy := b.steer(x, y, zcx, zcy, t)
 		moveX, moveY = moveX*0.3+zx, moveY*0.3+zy
 		if me.Energy > 40 {
 			a.Boost = true
@@ -543,6 +598,15 @@ func main() {
 		}
 		switch h.Type {
 		case "hello":
+			var hh struct {
+				Map struct {
+					Dir string `json:"dir"`
+				} `json:"map"`
+			}
+			json.Unmarshal(l, &hh)
+			if hh.Map.Dir != "" {
+				bot.nav = loadNav(hh.Map.Dir)
+			}
 			send(map[string]string{"type": "ready", "name": "gocool-go-F"})
 		case "obs":
 			var o Obs
