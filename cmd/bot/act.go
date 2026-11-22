@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"fmt"
 	"math"
 	"sort"
@@ -1353,6 +1354,13 @@ func (b *Bot) actInner(obs M) M {
 	}
 	if pb("retreat_holdfire") && hasPre("retreat") && nearEnemy > 40.0 {
 		fire = make([]bool, len(fire))
+	}
+	if os.Getenv("GOCOOL_LOG") != "" && int(t*10)%10 == 0 {
+		tid := any("-")
+		if target != nil {
+			tid = target["id"]
+		}
+		fmt.Fprintf(os.Stderr, "L %.0f %s|tgt=%v|n=%d|move=%.2f,%.2f|fire=%v|aim=%v\n", t, label, tid, len(enemies), move[0], move[1], fire, aim)
 	}
 	act["move"] = move
 	act["boost"] = boost
