@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"time"
 )
 
 type WStats struct {
@@ -64,6 +65,7 @@ type Item struct {
 type Event struct {
 	Type   string `json:"type"`
 	Effect string `json:"effect"`
+	By     int    `json:"by"`
 }
 type Zone struct {
 	Center      [2]float64 `json:"center"`
@@ -117,6 +119,36 @@ type Bot struct {
 	strafeUntil float64
 	shorted     float64
 	lastCharge  float64
+	nav         *Nav
+	hitFrom     map[int]float64
+	curTid      int
+	wp          [][2]float64
+	wpGoalX     float64
+	wpGoalY     float64
+	wpT         float64
+}
+
+// steer returns a unit direction toward (gx,gy): straight if clear, else along a time-capped A* path.
+func (b *Bot) steer(x, y, gx, gy, t float64) (float64, float64) {
+	sx, sy := norm(gx-x, gy-y)
+	if b.nav == nil || !b.nav.ok || b.nav.lineClear(x, y, gx, gy) {
+		return sx, sy
+	}
+	if len(b.wp) == 0 || t-b.wpT > 0.5 || hyp(b.wpGoalX-gx, b.wpGoalY-gy) > 10 {
+		b.wp = b.nav.path(x, y, gx, gy, 12*time.Millisecond)
+		b.wpGoalX, b.wpGoalY, b.wpT = gx, gy, t
+	}
+	for _, w := range b.wp {
+		if hyp(w[0]-x, w[1]-y) > 6 && b.nav.lineClear(x, y, w[0], w[1]) {
+			return norm(w[0]-x, w[1]-y)
+		}
+	}
+	for i := len(b.wp) - 1; i >= 0; i-- {
+		if hyp(b.wp[i][0]-x, b.wp[i][1]-y) > 3 {
+			return norm(b.wp[i][0]-x, b.wp[i][1]-y)
+		}
+	}
+	return sx, sy
 }
 
 func (b *Bot) lead(me *Self, tgt *Mech, speed float64) (yaw, pitch, hd float64) {
@@ -169,6 +201,9 @@ func (b *Bot) act(o *Obs) Action {
 		if e.Type == "effect" && e.Effect == "short" {
 			b.shorted = t + 2.0
 		}
+		if e.Type == "damaged" && e.By != 0 {
+			b.hitFrom[e.By] = t
+		}
 	}
 	// upgrade
 	if o.Offer != nil && len(o.Offer.Choices) > 0 {
@@ -204,26 +239,46 @@ func (b *Bot) act(o *Obs) Action {
 	hpf := me.HP / math.Max(me.MaxHP, 1)
 
 	// target: nearest mech, else near NPC
+	x, y := me.Pos[0], me.Pos[1]
 	var tgt *Mech
 	td := 1e9
+	myMax := math.Max(me.MaxHP, 1400)
 	for i := range o.Mechs {
 		m := &o.Mechs[i]
-		d := hyp(m.Pos[0]-me.Pos[0], m.Pos[1]-me.Pos[1])
-		pri := d
-		if m.Kind != "mech" {
-			if d > 110 || hpf < 0.5 {
-				continue
+		d := hyp(m.Pos[0]-x, m.Pos[1]-y)
+		if d > 300 {
+			continue
+		}
+		if m.Kind != "mech" && (d > 110 || hpf < 0.5) {
+			continue
+		}
+		vis := b.nav == nil || !b.nav.ok || b.nav.lineClear(x, y, m.Pos[0], m.Pos[1])
+		sc := d*0.5 + m.HP*0.08
+		if !vis {
+			sc += 120
+		}
+		rx, ry := x-m.Pos[0], y-m.Pos[1]
+		closing := (m.Vel[0]*rx + m.Vel[1]*ry) / math.Max(d, 1)
+		bear := math.Atan2(ry, rx)
+		hf, hit := b.hitFrom[m.ID]
+		threat := hit && t-hf < 6.0 ||
+			math.Abs(wrap(m.Aim[0]-bear)) < 0.22 && (closing > 1 || d < 120) || d < 45
+		if m.Kind == "mech" {
+			if threat {
+				sc -= 90
+			} else {
+				sc += 45
 			}
-			pri = d + 120
+		} else {
+			sc += 60
 		}
-		if m.HP > 0 && m.HP < 500 {
-			pri -= 40
-		}
-		if pri < td {
-			td, tgt = pri, m
+		if sc < td {
+			td, tgt = sc, m
 		}
 	}
-	x, y := me.Pos[0], me.Pos[1]
+	if tgt != nil {
+		b.curTid = tgt.ID
+	}
 	moveX, moveY := 0.0, 0.0
 	// zone center / safety
 	zcx, zcy, zr := x, y, 1e9
@@ -243,20 +298,32 @@ func (b *Bot) act(o *Obs) Action {
 		want := 100.0
 		if la >= 0 {
 			want = 120
+		} else if li >= 0 && gi < 0 {
+			want = 28
 		}
 		if tgt.Kind != "mech" {
 			want = 55
+		} else {
+			thp := tgt.HP / myMax
+			crowd := 0
+			for k := range o.Mechs {
+				if o.Mechs[k].ID != tgt.ID && o.Mechs[k].Kind == "mech" && hyp(o.Mechs[k].Pos[0]-x, o.Mechs[k].Pos[1]-y) < 150 {
+					crowd++
+				}
+			}
+			if (thp < 0.38 || thp < hpf-0.15) && crowd == 0 {
+				want = math.Min(want, 45)
+			}
 		}
 		if t > b.strafeUntil {
-			if b.strafe == 0 || int(t*7)%3 != 0 {
-				b.strafe = -b.strafe
-			}
+			b.strafe = -b.strafe
 			if b.strafe == 0 {
 				b.strafe = 1
 			}
-			b.strafeUntil = t + 2 + float64(int(t*13)%3)
+			b.strafeUntil = t + 2 + 2*(t*13.7-math.Floor(t*13.7))
 		}
 		rx, ry := norm(tgt.Pos[0]-x, tgt.Pos[1]-y)
+		ax, ay := rx, ry
 		radial := 0.0
 		if d > want+15 {
 			radial = 1
@@ -266,8 +333,11 @@ func (b *Bot) act(o *Obs) Action {
 		if hpf < 0.4 {
 			radial = -1
 		}
-		moveX = rx*radial + -ry*b.strafe*0.9
-		moveY = ry*radial + rx*b.strafe*0.9
+		if radial > 0 {
+			ax, ay = b.steer(x, y, tgt.Pos[0], tgt.Pos[1], t)
+		}
+		moveX = ax*radial + -ry*b.strafe*0.9
+		moveY = ay*radial + rx*b.strafe*0.9
 
 		// shoot
 		spd := 252.0
@@ -403,7 +473,7 @@ func (b *Bot) act(o *Obs) Action {
 		if found && !outside {
 			moveX, moveY = norm(tx-x, ty-y)
 		} else {
-			moveX, moveY = norm(zcx-x, zcy-y)
+			moveX, moveY = b.steer(x, y, zcx, zcy, t)
 			if zd < zr*0.35 {
 				moveX, moveY = 0, 0
 			}
@@ -429,7 +499,7 @@ func (b *Bot) act(o *Obs) Action {
 	}
 	// zone override
 	if outside {
-		zx, zy := norm(zcx-x, zcy-y)
+		zx, zy := b.steer(x, y, zcx, zcy, t)
 		moveX, moveY = moveX*0.3+zx, moveY*0.3+zy
 		if me.Energy > 40 {
 			a.Boost = true
@@ -513,7 +583,7 @@ func main() {
 		out.WriteByte('\n')
 		out.Flush()
 	}
-	bot := &Bot{strafe: 1}
+	bot := &Bot{strafe: 1, hitFrom: map[int]float64{}}
 	for l := range lines {
 		// skip to newest obs
 	drain:
@@ -543,6 +613,15 @@ func main() {
 		}
 		switch h.Type {
 		case "hello":
+			var hh struct {
+				Map struct {
+					Dir string `json:"dir"`
+				} `json:"map"`
+			}
+			json.Unmarshal(l, &hh)
+			if hh.Map.Dir != "" {
+				bot.nav = loadNav(hh.Map.Dir)
+			}
 			send(map[string]string{"type": "ready", "name": "gocool-go-F"})
 		case "obs":
 			var o Obs
