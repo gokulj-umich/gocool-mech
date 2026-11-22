@@ -317,6 +317,8 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
 P.update({"retreat_hp": 0.38, "recover_hp": 0.8, "lethal_laser": True, "upg": "armor"})
 # v38 probe: loot memory + grab cubes in fights + hunters first (sim +0.14 vs v36)
 P.update({"econ": True, "cube_fight_r": 70.0, "cube_fight_hp": 0.3, "threat_pri": 90.0})
+# v41 (random search r14, sim +0.61 on 150 seeds vs v38)
+P.update({"retreat_hp_multi": 0.5, "lose_rule": False, "fight_expo": 30.0, "strafe_min": 3.0, "strafe_max": 5.0, "want_gun": 100.0, "engage_r": 300.0, "smart_targets": False, "commit": False, "laser_grab_r": 60.0})
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
     import json as _json
