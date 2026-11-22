@@ -301,6 +301,9 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
           "stick": 0.0,                            # v38: score bonus for the current target (stop target thrashing)
           "stick_hurt": 0.0,                       # extra bonus per missing HP fraction of the target
           "solo_duel": False, "solo_hp": 0.25,
+          "g_outgun": False,                       # v47 (giddy): retreat when target has a laser, we don't, it's >55 m and hp<80%
+          "g_swamp": False,                        # v47 (giddy): retreat when 3+ engaged/close mechs see us, or 2 and hp<65%
+          "g_target": False,                       # v47 (giddy): target score = dist + .18*hp, -200 low, -200 sticky 2 s, -40 hit us, -15 closing
           "econ": False,                           # v38: remember crates/drones/cubes, walk to best value/(d+18)
           "econ_r": 260.0, "econ_npc_hp": 0.6, "econ_boost": False, "econ_give_up": 30.0,
           "econ_v_cube": 110.0, "econ_v_crate": 105.0, "econ_v_npc": 170.0,
@@ -393,6 +396,7 @@ class Bot:
         self.was_charging = {}
         self.pp = None            # power position: dict(roof, state, t0, climb)
         self.my_kills = 0
+        self.g_stick_id, self.g_stick_t = None, -99.0
         self.cover_t, self.cover_spot_ = -99.0, None
         self.mem_crates, self.mem_cubes, self.mem_npcs = {}, {}, {}
         self.loot_id, self.loot_since, self.loot_bad = None, 0.0, {}
@@ -725,6 +729,18 @@ class Bot:
             e["_los"] = vis
             # cheapest point first: weight remaining HP heavily (a wounded bot is a near-free kill)
             sc = e["_d"] * 0.5 + (0 if vis else 120) + e.get("hp", 1400) * 0.08
+            if P["g_target"]:
+                rxg, ryg = x - e["pos"][0], y - e["pos"][1]
+                clg = (e["vel"][0] * rxg + e["vel"][1] * ryg) / max(e["_d"], 1.0)
+                sc = e["_d"] + 0.18 * e.get("hp", 1400) + (0 if vis else 240)
+                if e.get("hp", 1400) <= 0.3 * e.get("max_hp", 1400):
+                    sc -= 200
+                if e["id"] == self.g_stick_id and t - self.g_stick_t < 2.0:
+                    sc -= 200
+                if t - self.hit_from.get(e["id"], -99.0) < 4.0:
+                    sc -= 40
+                if clg > 3:
+                    sc -= 15
             if P["threat_pri"]:
                 sc += -P["threat_pri"] if threat_ else P["threat_pri"] * 0.5
             if P["stick"] and e["id"] == self.cur_tid:
@@ -757,6 +773,8 @@ class Bot:
                     continue
             if sc < best:
                 best, target = sc, e
+        if target is not None:
+            self.g_stick_id, self.g_stick_t = target["id"], t
         self.cur_tid = target["id"] if target is not None else (
             self.cur_tid if self.cur_tid in self.tracks and t - self.tracks[self.cur_tid]["t"] < 5.0 else None)
         # NPC/crate farming only when no mechs around
@@ -929,6 +947,13 @@ class Bot:
             if len({hb for _, hb in self.hits_by}) >= P["gang_n"]:
                 self.gang_until = t + P["gang_hold"]
             if t < self.gang_until and threats:
+                converging = True
+        if P["g_outgun"] and target is not None and hp_frac < 0.8 and target["_d"] > 55:
+            if "laser" not in slots and any(wk == "laser" for wk in (target.get("weapons") or [])):
+                converging = True
+        if P["g_swamp"]:
+            crowd_g = sum(1 for e in enemies if e.get("_los") and (e["_d"] < 150 or t - self.hit_from.get(e["id"], -99.0) < 4.0))
+            if crowd_g >= 3 or (crowd_g == 2 and hp_frac < 0.65):
                 converging = True
         rh_ = P["retreat_hp"]
         if P["solo_duel"] and n_threats <= 1 and len([e for e in enemies if e["_d"] < 200]) <= 1:
