@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"time"
 )
 
 type WStats struct {
@@ -117,6 +118,28 @@ type Bot struct {
 	strafeUntil float64
 	shorted     float64
 	lastCharge  float64
+	nav         *Nav
+	path        [][2]float64
+	pathAt      float64
+	pathGx      float64
+	pathGy      float64
+}
+
+// steer returns a unit direction toward (gx,gy) via A* waypoints; straight line fallback.
+func (b *Bot) steer(x, y, gx, gy, t float64) (float64, float64) {
+	if b.nav == nil || !b.nav.ok {
+		return norm(gx-x, gy-y)
+	}
+	if hyp(gx-b.pathGx, gy-b.pathGy) > 15 || t-b.pathAt > 1.0 || len(b.path) == 0 {
+		b.path = b.nav.path(x, y, gx, gy, 15*time.Millisecond)
+		b.pathAt, b.pathGx, b.pathGy = t, gx, gy
+	}
+	for _, w := range b.path {
+		if hyp(w[0]-x, w[1]-y) > 5 {
+			return norm(w[0]-x, w[1]-y)
+		}
+	}
+	return norm(gx-x, gy-y)
 }
 
 func (b *Bot) lead(me *Self, tgt *Mech, speed float64) (yaw, pitch, hd float64) {
@@ -219,6 +242,9 @@ func (b *Bot) act(o *Obs) Action {
 		if m.HP > 0 && m.HP < 500 {
 			pri -= 40
 		}
+		if !b.nav.los(me.Pos[0], me.Pos[1], me.Pos[2]+7, m.Pos[0], m.Pos[1], m.Pos[2]+4.5) {
+			pri += 60
+		}
 		if pri < td {
 			td, tgt = pri, m
 		}
@@ -239,6 +265,7 @@ func (b *Bot) act(o *Obs) Action {
 	outside := zd > zr-25
 
 	if tgt != nil {
+		clear := b.nav.los(x, y, me.Pos[2]+7, tgt.Pos[0], tgt.Pos[1], tgt.Pos[2]+4.5)
 		d := hyp(tgt.Pos[0]-x, tgt.Pos[1]-y)
 		want := 100.0
 		if la >= 0 {
@@ -297,7 +324,7 @@ func (b *Bot) act(o *Obs) Action {
 				if cone == 0 {
 					cone = 30
 				}
-				if math.Abs(wrap(me.Aim[0]-yaw)) < cone*0.4*math.Pi/180 && lw.Cooldown <= 0.1 && me.Energy >= 3 {
+				if math.Abs(wrap(me.Aim[0]-yaw)) < cone*0.4*math.Pi/180 && lw.Cooldown <= 0.1 && me.Energy >= 3 && clear {
 					a.Fire[li] = true
 				}
 			}
@@ -326,7 +353,7 @@ func (b *Bot) act(o *Obs) Action {
 			}
 			ly, lp, lhd := b.lead(me, tgt, 1e9)
 			ch := lw.Charge
-			if d < lr*0.97 && t >= b.shorted && (li < 0 || d > 30) {
+			if d < lr*0.97 && t >= b.shorted && (li < 0 || d > 30) && clear {
 				if lw.Cooldown <= 0.15 {
 					lethal := false
 					if tgt.Kind == "mech" && ch >= minc && ch < full-0.12 {
@@ -363,7 +390,7 @@ func (b *Bot) act(o *Obs) Action {
 				a.Aim = [2]float64{yaw, pitch}
 				set = true
 			}
-			if hd < rng*0.97 && gw.Reload <= 0.1 && (gw.Ammo > 0 || gw.Reload > 0) {
+			if clear && hd < rng*0.97 && gw.Reload <= 0.1 && (gw.Ammo > 0 || gw.Reload > 0) {
 				tol := 2.2
 				if tgt.Kind != "mech" {
 					tol = 1.2
@@ -403,7 +430,7 @@ func (b *Bot) act(o *Obs) Action {
 		if found && !outside {
 			moveX, moveY = norm(tx-x, ty-y)
 		} else {
-			moveX, moveY = norm(zcx-x, zcy-y)
+			moveX, moveY = b.steer(x, y, zcx, zcy, t)
 			if zd < zr*0.35 {
 				moveX, moveY = 0, 0
 			}
@@ -429,7 +456,7 @@ func (b *Bot) act(o *Obs) Action {
 	}
 	// zone override
 	if outside {
-		zx, zy := norm(zcx-x, zcy-y)
+		zx, zy := b.steer(x, y, zcx, zcy, t)
 		moveX, moveY = moveX*0.3+zx, moveY*0.3+zy
 		if me.Energy > 40 {
 			a.Boost = true
@@ -543,6 +570,14 @@ func main() {
 		}
 		switch h.Type {
 		case "hello":
+			var hh struct {
+				Map struct {
+					Dir string `json:"dir"`
+				} `json:"map"`
+			}
+			if json.Unmarshal(l, &hh) == nil && hh.Map.Dir != "" {
+				bot.nav = loadNav(hh.Map.Dir)
+			}
 			send(map[string]string{"type": "ready", "name": "gocool-go-F"})
 		case "obs":
 			var o Obs

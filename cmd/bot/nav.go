@@ -19,6 +19,8 @@ type Nav struct {
 	nx, ny   int
 	tx0, ty0 float64
 	terr     []int16
+	prs      []prism
+	cellPr   [][]int32
 }
 
 type prism struct {
@@ -73,11 +75,7 @@ func loadNav(dir string) *Nav {
 			MinX, MinY float64
 			Nx, Ny     int
 		}
-		Prisms []struct {
-			Base, Top float64
-			Ring      []float64
-			Holes     [][]float64
-		}
+		Prisms []prism
 	}
 	if json.Unmarshal(b, &w) != nil {
 		return n
@@ -94,7 +92,9 @@ func loadNav(dir string) *Nav {
 	n.W = int((w.Bounds.MaxX-w.Bounds.MinX)/cs) + 1
 	n.H = int((w.Bounds.MaxY-w.Bounds.MinY)/cs) + 1
 	raw := make([]bool, n.W*n.H)
-	for _, p := range w.Prisms {
+	n.prs = w.Prisms
+	n.cellPr = make([][]int32, n.W*n.H)
+	for pi, p := range w.Prisms {
 		minx, maxx, miny, maxy := 1e9, -1e9, 1e9, -1e9
 		for k := 0; k+1 < len(p.Ring); k += 2 {
 			minx, maxx = math.Min(minx, p.Ring[k]), math.Max(maxx, p.Ring[k])
@@ -104,6 +104,7 @@ func loadNav(dir string) *Nav {
 		j0, j1 := int((miny-n.y0)/cs)-1, int((maxy-n.y0)/cs)+1
 		for j := max(j0, 0); j <= min(j1, n.H-1); j++ {
 			for i := max(i0, 0); i <= min(i1, n.W-1); i++ {
+				n.cellPr[j*n.W+i] = append(n.cellPr[j*n.W+i], int32(pi))
 				x, y := n.x0+cs*float64(i), n.y0+cs*float64(j)
 				if !pip(p.Ring, x, y) {
 					continue
@@ -295,4 +296,42 @@ func (n *Nav) path(sx, sy, gx, gy float64, budget time.Duration) [][2]float64 {
 		out = append(out, rev[i])
 	}
 	return out
+}
+
+// los: 3D line of sight vs building prisms and terrain; true if clear (or no map).
+func (n *Nav) los(ax, ay, az, bx, by, bz float64) bool {
+	if n == nil || !n.ok {
+		return true
+	}
+	d := math.Hypot(bx-ax, by-ay)
+	k := int(d/1.5) + 1
+	for s := 1; s < k; s++ {
+		t := float64(s) / float64(k)
+		x, y, z := ax+(bx-ax)*t, ay+(by-ay)*t, az+(bz-az)*t
+		if n.terr != nil && z < n.ground(x, y)-0.2 {
+			return false
+		}
+		i := int(math.Round((x - n.x0) / cs))
+		j := int(math.Round((y - n.y0) / cs))
+		if i < 0 || j < 0 || i >= n.W || j >= n.H {
+			continue
+		}
+		for _, pi := range n.cellPr[j*n.W+i] {
+			p := &n.prs[pi]
+			if z < p.Base || z > p.Top || !pip(p.Ring, x, y) {
+				continue
+			}
+			hole := false
+			for _, h := range p.Holes {
+				if pip(h, x, y) {
+					hole = true
+					break
+				}
+			}
+			if !hole {
+				return false
+			}
+		}
+	}
+	return true
 }
