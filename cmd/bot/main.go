@@ -125,6 +125,11 @@ type Bot struct {
 	pathGx      float64
 	pathGy      float64
 	retreating  bool
+	hideOK      bool
+	hideX       float64
+	hideY       float64
+	hideAt      float64
+	hiding      bool
 	hitFrom     map[int]float64
 	curTid      int
 }
@@ -157,6 +162,45 @@ func (b *Bot) retreatDir(x, y float64, thr []*Mech, zcx, zcy, zr float64) (float
 		}
 	}
 	return bx, by
+}
+
+// pickHide: nearest walkable in-zone point hidden from all threats (rings 8/16/24/36, 16 headings).
+func (b *Bot) pickHide(x, y, z float64, thr []*Mech, zcx, zcy, zr float64) (float64, float64, bool) {
+	n := b.nav
+	if n == nil || !n.ok {
+		return 0, 0, false
+	}
+	for _, r := range []float64{8, 16, 24, 36} {
+		bd, bx, by := 1e18, 0.0, 0.0
+		for k := 0; k < 16; k++ {
+			a := float64(k) * math.Pi / 8
+			px, py := x+math.Cos(a)*r, y+math.Sin(a)*r
+			if hyp(px-zcx, py-zcy) > zr-5 {
+				continue
+			}
+			i, j := n.cell(px, py)
+			if !n.free(i, j) {
+				continue
+			}
+			pz := n.ground(px, py) + 4.5
+			ok := true
+			sd := 0.0
+			for _, m := range thr {
+				if n.los(px, py, pz, m.Pos[0], m.Pos[1], m.Pos[2]+4.5) {
+					ok = false
+					break
+				}
+				sd += 1 / (1 + hyp(px-m.Pos[0], py-m.Pos[1]))
+			}
+			if ok && sd < bd {
+				bd, bx, by = sd, px, py
+			}
+		}
+		if bd < 1e17 {
+			return bx, by, true
+		}
+	}
+	return 0, 0, false
 }
 
 // steer returns a unit direction toward (gx,gy) via A* waypoints; straight line fallback.
@@ -591,13 +635,31 @@ func (b *Bot) act(o *Obs) Action {
 	}
 	if hpf >= 0.8 || len(thr) == 0 && hpf >= 0.5 {
 		b.retreating = false
+		b.hideOK = false
 	} else if len(thr) > 0 && (hpf < 0.38 || hpf < 0.5 && len(thr) >= 2) {
 		b.retreating = true
 	}
 	if b.retreating && !near40 && len(thr) > 0 {
-		moveX, moveY = b.retreatDir(x, y, thr, zcx, zcy, zr)
+		b.hiding = false
+		if t-b.hideAt > 0.7 || !b.hideOK {
+			b.hideX, b.hideY, b.hideOK = b.pickHide(x, y, me.Pos[2], thr, zcx, zcy, zr)
+			b.hideAt = t
+		}
+		if b.hideOK {
+			if hyp(b.hideX-x, b.hideY-y) < 2.5 {
+				moveX, moveY = 0, 0
+				b.hiding = true
+			} else {
+				moveX, moveY = b.steer(x, y, b.hideX, b.hideY, t)
+			}
+		} else {
+			moveX, moveY = b.retreatDir(x, y, thr, zcx, zcy, zr)
+		}
 		if outside && me.Energy > 40 {
 			a.Boost = true
+		}
+		if b.hiding {
+			a.Fire = [2]bool{}
 		}
 	}
 	mx, my := norm(moveX, moveY)
