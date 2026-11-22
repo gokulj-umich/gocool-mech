@@ -294,6 +294,11 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
           "lose_rule": False,                      # retreat when 2 near & hp<.55, 3 near & hp<.8, or losing the trade
           "lethal_laser": False,                   # release a partial laser charge when it kills
           "fight_expo": 0.0,
+          "cover_retreat": False,                  # v38: retreat = go to nearest spot hidden from threats and hold; none -> fight
+          "cover_max": 60.0, "cornered_fight": True,
+          "econ": False,                           # v38: remember crates/drones/cubes, walk to best value/(d+18)
+          "econ_r": 260.0, "econ_npc_hp": 0.6, "econ_boost": False, "econ_give_up": 30.0,
+          "econ_v_cube": 110.0, "econ_v_crate": 105.0, "econ_v_npc": 170.0,
           "threat_pri": 0.0,                       # bonus for mechs actively hunting us (hit us / aimed+closing)
           "pace_s": 0.0,                           # after a kill: no new non-threat targets for this long or until healed
           "pace_hp": 0.9,
@@ -371,6 +376,9 @@ class Bot:
         self.was_charging = {}
         self.pp = None            # power position: dict(roof, state, t0, climb)
         self.my_kills = 0
+        self.cover_t, self.cover_spot_ = -99.0, None
+        self.mem_crates, self.mem_cubes, self.mem_npcs = {}, {}, {}
+        self.loot_id, self.loot_since, self.loot_bad = None, 0.0, {}
         self.last_kill_t = -99.0
         self.hit_ids = set()      # mechs we have already damaged (no longer unaware)
         self.recovering = False
@@ -797,6 +805,57 @@ class Bot:
             # outside the next circle: only while there is plenty of time before the shrink
             return time_to_shrink > d2((px, py), pos) / 9.0 + dn / 9.0 + 15.0 and t < zone["shrink_start"]
 
+        econ_goal = None
+        if P["econ"]:
+            cur_c = {c["id"]: c for c in obs.get("crates", [])}
+            cur_q = {c["id"]: c for c in obs.get("cubes", [])}
+            cur_n = {n["id"]: n for n in npcs}
+            for mem, cur in ((self.mem_crates, cur_c), (self.mem_cubes, cur_q), (self.mem_npcs, cur_n)):
+                for i_, o_ in cur.items():
+                    mem[i_] = (list(o_["pos"]), t)
+                for i_ in list(mem):
+                    if i_ not in cur and d2(mem[i_][0], pos) < 22:
+                        del mem[i_]
+            for i_ in list(self.mem_npcs):
+                if t - self.mem_npcs[i_][1] > 40:
+                    del self.mem_npcs[i_]
+            hurt_ = hp_frac <= 0.45
+            mech_near_ = (t - self.enemy_seen_t) < 0.3
+            best_ = None
+            bu_ = 0.0
+            def cons_(kind, i_, p_, v_):
+                nonlocal best_, bu_
+                if self.loot_bad.get(i_, -1.0) > t:
+                    return
+                dd_ = d2(p_, pos)
+                if dd_ > P["econ_r"] or (hurt_ and dd_ > 35 and kind != "npc"):
+                    return
+                if not zone_ok(p_[0], p_[1]) or p_[2] - w.ground(p_[0], p_[1]) > 3.2:
+                    return
+                u_ = v_ / (dd_ + 18.0) * (1.35 if i_ == self.loot_id else 1.0)
+                if u_ > bu_:
+                    bu_, best_ = u_, (kind, i_, p_, dd_)
+            for i_, (p_, _) in self.mem_cubes.items():
+                cons_("cube", i_, p_, P["econ_v_cube"])
+            if P["crates"]:
+                for i_, (p_, _) in self.mem_crates.items():
+                    cons_("crate", i_, p_, P["econ_v_crate"])
+            if hp_frac > P["econ_npc_hp"] and not mech_near_:
+                for i_, (p_, ts_) in self.mem_npcs.items():
+                    cons_("npc", i_, p_, P["econ_v_npc"] - (15.0 if t - ts_ > 12 else 0.0))
+            if best_ is not None:
+                if best_[1] != self.loot_id:
+                    self.loot_id, self.loot_since = best_[1], t
+                elif t - self.loot_since > P["econ_give_up"]:
+                    self.loot_bad[best_[1]] = t + 60.0
+                    self.loot_id = None
+                    best_ = None
+            else:
+                self.loot_id = None
+            econ_goal = best_
+            if econ_goal is not None:
+                econ_goal = econ_goal + ((cur_c if econ_goal[0] == "crate" else cur_n if econ_goal[0] == "npc" else cur_q).get(econ_goal[1]),)
+
         cube_goal = None
         for c in obs.get("cubes", []):
             dd = d2(c["pos"], pos)
@@ -910,6 +969,26 @@ class Bot:
             else:
                 label = "regen"
                 move = [0.0, 0.0]
+        elif losing and P["cover_retreat"]:
+            if t - self.cover_t > 0.5:
+                self.cover_t = t
+                self.cover_spot_ = self.cover_spot(me, threats, circle)
+            sp_ = self.cover_spot_
+            if sp_ is None:
+                if target is not None and P["cornered_fight"]:
+                    label = f"fight {target['id']} cornered"
+                    move = self.fight_vector(me, target, slots, weps, circle)
+                else:
+                    label = "retreat"
+                    move = self.retreat_vector(me, threats, circle)
+                    boost = me["energy"] > 25
+            elif d2(sp_, pos) < 2.0:
+                label = "retreat cover-hold"
+                move = [0.0, 0.0]
+            else:
+                label = "retreat cover"
+                move = self.go_to(me, self.local_plan, sp_, t)
+                boost = me["energy"] > 10
         elif losing:
             label = "retreat"
             move = self.retreat_vector(me, threats, circle)
@@ -979,6 +1058,19 @@ class Bot:
                 if reloading and not other_ready:
                     label += " reload-cover"
                     move = self.retreat_vector(me, threats or [target], circle)
+        elif econ_goal is not None:
+            kind_, i_, p_, dd_, obj_ = econ_goal
+            label = "econ " + kind_
+            if kind_ == "npc" and obj_ is not None and dd_ < 75 and w.los(muzzle, (p_[0], p_[1], p_[2] + 1.75)):
+                move = self.fight_vector(me, obj_, slots, weps, circle, want=P["npc_stand"])
+                farm_shoot = ("npc", obj_)
+            elif kind_ == "crate" and obj_ is not None and dd_ < 50 and w.los(muzzle, (p_[0], p_[1], p_[2] + 1.2)):
+                farm_shoot = ("crate", obj_)
+                if dd_ < 12:
+                    move = [(x - p_[0]) / max(dd_, 0.1), (y - p_[1]) / max(dd_, 0.1)]
+            else:
+                move = self.go_to(me, self.local_plan, (p_[0], p_[1]), t)
+                boost = P["econ_boost"] and dd_ > 40 and me["energy"] > 40 and t - self.enemy_seen_t > 3
         elif pp_res is not None:
             label = pp_res["label"]
             move, boost = pp_res["move"], pp_res["boost"]
@@ -1591,6 +1683,40 @@ class Bot:
             return None
         self.peek = (best[1], best[2], tgt["id"], t + 1.0)
         return (best[1], best[2])
+
+    def cover_spot(self, me, threats, circle):
+        x, y, z = me["pos"]
+        w = self.w
+        cx, cy, r, mr = circle
+        ths = sorted(threats, key=lambda e: e["_d"])[:4]
+
+        def hidden(px, py):
+            g = w.ground(px, py)
+            for e in ths:
+                ez = (e["pos"][0], e["pos"][1], e["pos"][2] + 5.0)
+                if w.los(ez, (px, py, g + 5.5), step=2.0) or w.los(ez, (px, py, g + 2.5), step=2.0):
+                    return False
+            return True
+        if hidden(x, y):
+            return (x, y)
+        best, bs = None, 1e18
+        for ring in (5.0, 10.0, 16.0, 24.0, 34.0, 46.0, 60.0):
+            if ring > P["cover_max"]:
+                break
+            for k in range(20):
+                a = k * TAU / 20
+                px, py = x + math.cos(a) * ring, y + math.sin(a) * ring
+                if not w.walkable(px, py) or math.hypot(px - cx, py - cy) > max(r - 5, mr):
+                    continue
+                if abs(w.ground(px, py) - w.ground(x, y)) > 3.0:
+                    continue
+                sc = ring * (1.0 if w.clear_line((x, y), (px, py)) else 1.8)
+                sc -= 0.15 * sum(d2((px, py), e["pos"]) - e["_d"] for e in ths)
+                if sc < bs and hidden(px, py):
+                    bs, best = sc, (px, py)
+            if best is not None and ring >= 10.0:
+                break
+        return best
 
     def retreat_vector(self, me, threats, circle):
         x, y, z = me["pos"]
