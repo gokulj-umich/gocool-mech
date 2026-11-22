@@ -298,6 +298,8 @@ P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no 
           "cover_max": 60.0, "cornered_fight": True,
           "avoid_r": 0.0,                          # v38 (Xero idea): when not fighting, steer away from known mechs within this
           "avoid_w": 1.2, "avoid_loot": 60.0,
+          "stick": 0.0,                            # v38: score bonus for the current target (stop target thrashing)
+          "stick_hurt": 0.0,                       # extra bonus per missing HP fraction of the target
           "econ": False,                           # v38: remember crates/drones/cubes, walk to best value/(d+18)
           "econ_r": 260.0, "econ_npc_hp": 0.6, "econ_boost": False, "econ_give_up": 30.0,
           "econ_v_cube": 110.0, "econ_v_crate": 105.0, "econ_v_npc": 170.0,
@@ -712,6 +714,8 @@ class Bot:
             sc = e["_d"] * 0.5 + (0 if vis else 120) + e.get("hp", 1400) * 0.08
             if P["threat_pri"]:
                 sc += -P["threat_pri"] if threat_ else P["threat_pri"] * 0.5
+            if P["stick"] and e["id"] == self.cur_tid:
+                sc -= P["stick"] + P["stick_hurt"] * (1.0 - e.get("hp", 1400) / max(e.get("max_hp", 1400), 1))
             if P["smart_targets"]:
                 escorts = sum(1 for o in enemies if o is not e and d2(o["pos"], e["pos"]) < 50)
                 sc += escorts * 40.0                      # escorted targets are expensive
