@@ -65,6 +65,7 @@ type Item struct {
 type Event struct {
 	Type   string `json:"type"`
 	Effect string `json:"effect"`
+	By     int    `json:"by"`
 }
 type Zone struct {
 	Center      [2]float64 `json:"center"`
@@ -119,6 +120,7 @@ type Bot struct {
 	shorted     float64
 	lastCharge  float64
 	nav         *Nav
+	hitFrom     map[int]float64
 	path        [][2]float64
 	pathAt      float64
 	pathGx      float64
@@ -192,6 +194,9 @@ func (b *Bot) act(o *Obs) Action {
 		if e.Type == "effect" && e.Effect == "short" {
 			b.shorted = t + 2.0
 		}
+		if e.Type == "damaged" && e.By != 0 {
+			b.hitFrom[e.By] = t
+		}
 	}
 	// upgrade
 	if o.Offer != nil && len(o.Offer.Choices) > 0 {
@@ -227,29 +232,42 @@ func (b *Bot) act(o *Obs) Action {
 	hpf := me.HP / math.Max(me.MaxHP, 1)
 
 	// target: nearest mech, else near NPC
+	x, y := me.Pos[0], me.Pos[1]
 	var tgt *Mech
 	td := 1e9
+	myMax := math.Max(me.MaxHP, 1400)
 	for i := range o.Mechs {
 		m := &o.Mechs[i]
-		d := hyp(m.Pos[0]-me.Pos[0], m.Pos[1]-me.Pos[1])
-		pri := d
-		if m.Kind != "mech" {
-			if d > 110 || hpf < 0.5 {
-				continue
+		d := hyp(m.Pos[0]-x, m.Pos[1]-y)
+		if d > 300 {
+			continue
+		}
+		if m.Kind != "mech" && (d > 110 || hpf < 0.5) {
+			continue
+		}
+		sc := d*0.5 + m.HP*0.08
+		if !b.nav.los(x, y, me.Pos[2]+7, m.Pos[0], m.Pos[1], m.Pos[2]+4.5) {
+			sc += 120
+		}
+		rx, ry := x-m.Pos[0], y-m.Pos[1]
+		closing := (m.Vel[0]*rx + m.Vel[1]*ry) / math.Max(d, 1)
+		bear := math.Atan2(ry, rx)
+		hf, hit := b.hitFrom[m.ID]
+		threat := hit && t-hf < 6.0 ||
+			math.Abs(wrap(m.Aim[0]-bear)) < 0.22 && (closing > 1 || d < 120) || d < 45
+		if m.Kind == "mech" {
+			if threat {
+				sc -= 90
+			} else {
+				sc += 45
 			}
-			pri = d + 120
+		} else {
+			sc += 60
 		}
-		if m.HP > 0 && m.HP < 500 {
-			pri -= 40
-		}
-		if !b.nav.los(me.Pos[0], me.Pos[1], me.Pos[2]+7, m.Pos[0], m.Pos[1], m.Pos[2]+4.5) {
-			pri += 60
-		}
-		if pri < td {
-			td, tgt = pri, m
+		if sc < td {
+			td, tgt = sc, m
 		}
 	}
-	x, y := me.Pos[0], me.Pos[1]
 	moveX, moveY := 0.0, 0.0
 	// zone center / safety
 	zcx, zcy, zr := x, y, 1e9
@@ -270,18 +288,29 @@ func (b *Bot) act(o *Obs) Action {
 		want := 100.0
 		if la >= 0 {
 			want = 120
+		} else if li >= 0 && gi < 0 {
+			want = 28
 		}
 		if tgt.Kind != "mech" {
 			want = 55
+		} else {
+			thp := tgt.HP / myMax
+			crowd := 0
+			for k := range o.Mechs {
+				if o.Mechs[k].ID != tgt.ID && o.Mechs[k].Kind == "mech" && hyp(o.Mechs[k].Pos[0]-x, o.Mechs[k].Pos[1]-y) < 150 {
+					crowd++
+				}
+			}
+			if (thp < 0.38 || thp < hpf-0.15) && crowd == 0 {
+				want = math.Min(want, 45)
+			}
 		}
 		if t > b.strafeUntil {
-			if b.strafe == 0 || int(t*7)%3 != 0 {
-				b.strafe = -b.strafe
-			}
+			b.strafe = -b.strafe
 			if b.strafe == 0 {
 				b.strafe = 1
 			}
-			b.strafeUntil = t + 2 + float64(int(t*13)%3)
+			b.strafeUntil = t + 2 + 2*(t*13.7-math.Floor(t*13.7))
 		}
 		rx, ry := norm(tgt.Pos[0]-x, tgt.Pos[1]-y)
 		radial := 0.0
@@ -540,7 +569,7 @@ func main() {
 		out.WriteByte('\n')
 		out.Flush()
 	}
-	bot := &Bot{strafe: 1}
+	bot := &Bot{strafe: 1, hitFrom: map[int]float64{}}
 	for l := range lines {
 		// skip to newest obs
 	drain:
