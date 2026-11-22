@@ -284,6 +284,17 @@ P.update({"press_hp": 0.45, "press_gap": 0.25, "press_r": 45.0, "forget_dead": F
 P.update({"laser_grab": True, "laser_grab_r": 90.0,
           "recover_hp": 0.0, "endgame_t": 9999.0, "retreat_hp_multi": 0.25,
           "drone_avoid": True, "forget_dead": True, "farm_hp_gate": True})
+# v35 knobs (default off = v33b behaviour)
+P.update({"quiet": False, "quiet_scale": 0.4,      # move silently (< 5 m/s, no boost) when not fighting/retreating/zone
+          "heal_first": False,                     # heal (hide + regen) before roaming/hunting/looting
+          "sit_heal": False,                       # while healing, stand still once at the hide spot (already) / or wherever we are
+          "cube_fight_r": 0.0,                     # grab visible cubes within this range even while a target exists
+          "cube_fight_hp": 0.35,
+          "upg": "base",                           # "armor": plating, armor, laser_damage, laser_charge, nanites, gun...
+          "lose_rule": False,                      # retreat when 2 near & hp<.55, 3 near & hp<.8, or losing the trade
+          "lethal_laser": False,                   # release a partial laser charge when it kills
+          "fight_expo": 0.0,                       # fight spot choice: penalty per other enemy that can see the spot
+          })
 LABLOG = bool(os.environ.get("GOCOOL_LOG"))
 try:   # lab only: variant overrides from the environment (never set in the match container)
     import json as _json
@@ -295,6 +306,9 @@ UPGRADE_PRIORITY = ["plating", "gun_mag", "gun_damage", "laser_damage", "nanites
                     "lightning_efficiency", "servos", "gun_velocity", "sensors", "lightning_range", "gyros",
                     "lightning_chain", "reactor", "capacitor", "jets", "mortar_reload", "mortar_velocity",
                     "mortar_splash", "laser_pierce"]  # v27: gun is our main damage (always held); mag = +31% sustained DPS
+UPG_ARMOR = ["plating", "armor", "laser_damage", "laser_charge", "nanites", "gun_damage", "gun_mag", "gun_rate",
+             "lightning_efficiency", "lightning_range", "servos", "gun_velocity", "gyros", "lightning_chain", "reactor",
+             "capacitor", "sensors", "jets", "mortar_reload", "mortar_velocity", "mortar_splash", "laser_pierce"]
 WEAPON_RANK = {"lightning": 3.0, "laser": 2.6, "mortar": 1.0, "gun": 0.0}
 if P["laser_first"]:
     WEAPON_RANK["laser"] = 4.0
@@ -324,6 +338,7 @@ class Bot:
         self.hits_by = []         # v19: (t, attacker id) for recent damage
         self.gang_until = -99.0
         self.cur_threats = []
+        self.cur_enemies = []
         self.scan_phase = random.random() * TAU
         self.hide_goal = None
         self.hide_key = None
@@ -528,7 +543,8 @@ class Bot:
             ch = offer["choices"]
             best, bi = 999, 0
             for i, c in enumerate(ch):
-                r = UPGRADE_PRIORITY.index(c["id"]) if c["id"] in UPGRADE_PRIORITY else 50
+                UP = UPG_ARMOR if P["upg"] == "armor" else UPGRADE_PRIORITY
+                r = UP.index(c["id"]) if c["id"] in UP else 50
                 if r < best:
                     best, bi = r, i
             act["pick"] = bi
@@ -578,6 +594,7 @@ class Bot:
         for e in enemies:
             e["_d"] = d2(e["pos"], pos)
         enemies.sort(key=lambda e: e["_d"])
+        self.cur_enemies = enemies
         for e in enemies:
             self.tracks[e["id"]] = {"pos": list(e["pos"]), "vel": list(e["vel"]), "t": t, "hp": e.get("hp", 1400),
                                     "max_hp": e.get("max_hp", 1400), "weapons": e.get("weapons", []), "cubes": e.get("cubes", 0)}
@@ -793,6 +810,17 @@ class Bot:
             if t < self.gang_until and threats:
                 converging = True
         losing = converging or (P["pacifist"] and bool(threats)) or (P["stealth"] and bool(threats) and target is None) or threats and (hp_frac < P["retreat_hp"] or (hp_frac < P["retreat_hp_multi"] and (n_threats >= 2 or strongest > my_hp * 1.3)))
+        if P["lose_rule"] and threats:
+            near_n = sum(1 for e in enemies if e["_d"] < 160)
+            lr = (near_n >= 2 and hp_frac < 0.55) or (near_n >= 3 and hp_frac < 0.8)
+            if target is not None:
+                tf = target.get("hp", 1400) / max(target.get("max_hp", 1400), 1)
+                if hp_frac < 0.35 and tf > hp_frac + 0.1:
+                    lr = True
+                if tf < 0.25 and hp_frac > 0.2 and near_n <= 2:
+                    lr = False
+                    losing = False
+            losing = losing or lr
         near_enemy = min((e["_d"] for e in enemies), default=999.0)
         heal_mode = hp_frac < (0.85 if self.survival else P["heal_to"]) and not threats and (t - self.last_damage_t) > 0.5
         if losing:
@@ -828,6 +856,20 @@ class Bot:
             label = "retreat"
             move = self.retreat_vector(me, threats, circle)
             boost = me["energy"] > 25
+        elif P["heal_first"] and heal_mode and target is None:
+            label = "heal"
+            if P["sit_heal"]:
+                move = [0.0, 0.0]
+            else:
+                hide = self.pick_hide(obs, circle)
+                if d2(hide, pos) > 3.0:
+                    move = self.go_to(me, self.zone_plan, hide, t)
+                    speed_scale = 0.4
+        elif (P["cube_fight_r"] > 0 and cube_goal is not None and cube_goal[2] < P["cube_fight_r"]
+              and hp_frac > P["cube_fight_hp"]):
+            label = "cube-grab"
+            move = self.go_to(me, self.local_plan, (cube_goal[0], cube_goal[1]), t)
+            boost = cube_goal[2] > 12 and me["energy"] > 30
         elif P["laser_grab"] and laser_goal is not None and laser_goal[2] < P["laser_grab_r"] and hp_frac > 0.3:
             # v24: lasers mostly come from dead mechs (1272 drops vs 300 spawns in lab replays); we picked up
             # only 5 of 44 lasers dropped by our own kills, usually lying 40-65 m away. Go take it now;
@@ -967,6 +1009,10 @@ class Bot:
                 boost = False
                 speed_scale = min(speed_scale, 0.4)
 
+        if P["quiet"] and not (urgent_zone and zgoal is not None) and not label.startswith(("fight", "retreat", "cube-grab", "grab-laser", "drop-heal")):
+            boost = False
+            speed_scale = min(speed_scale, P["quiet_scale"])
+
         # ---- lab finding: hurt bots get worn down by drones (45 m guard radius). Keep out of it unless farming.
         if P["drone_avoid"] and hp_frac < P["drone_avoid_hp"] and not label.startswith("npc") and not label.startswith("zone"):
             for n in npcs:
@@ -1090,7 +1136,17 @@ class Bot:
             ly, lp, lhd, _ = self.lead(me, tgt, 1e9)
             if d < rng * 0.97 and vis and t >= self.shorted_until and (li is None or d > 30):
                 if lw.get("cooldown", 0) <= 0.15:
-                    if charge < full - 0.12:
+                    lethal = False
+                    if P["lethal_laser"] and tgt.get("kind") == "mech" and charge >= lw["stats"].get("min_charge", 0.15) and charge < full - 0.12:
+                        st = lw["stats"]
+                        dmg = st.get("damage", 315) * (st.get("min_frac", 0.35) + (1 - st.get("min_frac", 0.35)) * charge / full)
+                        dmg *= 1 + self.cfg["cubes"].get("damage_per_cube", 0.04) * min(me.get("cubes", 0), self.cfg["cubes"].get("stat_cap", 10))
+                        lethal = dmg * 0.7 >= tgt.get("hp", 1400)
+                    if lethal:
+                        laser_aim_now = True
+                        aim = [ly, lp]
+                        fire[la] = not self.aligned(me, ly, lp, lhd, 1.2)
+                    elif charge < full - 0.12:
                         fire[la] = True  # keep charging
                     else:
                         laser_aim_now = True
@@ -1187,6 +1243,27 @@ class Bot:
         radial = max(-1.0, min(1.0, (d - want) / 30.0))
         mvx = px * self.strafe_dir * 0.9 + rx * radial * 0.7
         mvy = py * self.strafe_dir * 0.9 + ry * radial * 0.7
+        if P["fight_expo"] > 0 and tgt.get("kind") == "mech":
+            others = [e for e in self.cur_enemies if e.get("id") != tgt.get("id") and e.get("_d", 999) < 170]
+            if others:
+                best_s, best_v = None, None
+                mz = me["pos"][2]
+                for k in range(16):
+                    a = k * math.pi / 8
+                    dx, dy = math.cos(a), math.sin(a)
+                    cx_, cy_ = x + dx * 7.0, y + dy * 7.0
+                    if not self.w.walkable(cx_, cy_):
+                        continue
+                    s_ = -1.1 * abs(d2((cx_, cy_), (tx, ty)) - want) + 12.0 * (dx * px * self.strafe_dir + dy * py * self.strafe_dir)
+                    gz = self.w.ground(cx_, cy_)
+                    body = (cx_, cy_, gz + 3.5)
+                    for e in others:
+                        if self.w.los((e["pos"][0], e["pos"][1], e["pos"][2] + 5.0), body):
+                            s_ -= P["fight_expo"]
+                    if best_s is None or s_ > best_s:
+                        best_s, best_v = s_, (dx, dy)
+                if best_v is not None:
+                    mvx, mvy = best_v[0] * 1.1, best_v[1] * 1.1
         # do not leave the safe circle
         cx, cy, r, mr = circle
         if math.hypot(x - cx, y - cy) > mr:
