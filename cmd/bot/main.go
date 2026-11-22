@@ -725,12 +725,16 @@ func (b *Bot) act(o *Obs) Action {
 	// retreat rule: <38% w/ threat or <50% w/ 2+; recover to 80%
 	var thr []*Mech
 	near40 := false
+	n200 := 0
 	for i := range o.Mechs {
 		m := &o.Mechs[i]
 		if m.Kind != "mech" || m.HP <= 0 {
 			continue
 		}
 		d := hyp(m.Pos[0]-x, m.Pos[1]-y)
+		if d < 200 {
+			n200++
+		}
 		if d < 160 {
 			thr = append(thr, m)
 		}
@@ -738,9 +742,13 @@ func (b *Bot) act(o *Obs) Action {
 			near40 = true
 		}
 	}
+	rh := 0.38
+	if len(thr) <= 1 && n200 <= 1 {
+		rh = math.Min(rh, 0.15) // solo duel: fight a lone hunter
+	}
 	if hpf >= 0.8 || len(thr) == 0 && hpf >= 0.5 {
 		b.retreating = false
-	} else if len(thr) > 0 && (hpf < 0.38 || hpf < 0.5 && len(thr) >= 2) {
+	} else if len(thr) > 0 && (hpf < rh || hpf < 0.5 && len(thr) >= 2) {
 		b.retreating = true
 	}
 	if b.retreating && !near40 && len(thr) > 0 {
